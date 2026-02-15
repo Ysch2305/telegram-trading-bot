@@ -10,8 +10,13 @@ from telegram.ext import (
     CallbackContext,
 )
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID_USER")  # opsional tapi bisa langsung kirim
+# ===== AMAN & JELAS =====
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN belum diset di Railway Variables!")
+
+CHAT_ID = os.environ.get("CHAT_ID_USER")
 
 watchlist = ["BUMI.JK","BBCA.JK","BUVA.JK","BBRI.JK","BMRI.JK","ANTM.JK"]
 
@@ -68,4 +73,5 @@ updater.dispatcher.add_handler(CommandHandler("start", start))
 updater.dispatcher.add_handler(CommandHandler("scan", cmd_scan))
 
 updater.start_polling()
+
 updater.idle()
