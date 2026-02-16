@@ -21,16 +21,15 @@ AUTHORIZED_ID = os.environ.get("MY_ID")
 USER_CHAT_ID = None
 SENT_STOCKS = [] 
 
-# --- DAFTAR RADAR IHSG (Untuk Auto Update tiap 5 menit) ---
+# --- DAFTAR RADAR IHSG (Auto Update) ---
 IHSG_RADAR = [
     "ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "GOTO.JK",
     "ASSA.JK", "BUMI.JK", "ANTM.JK", "MDKA.JK", "INCO.JK", "PGAS.JK", "UNTR.JK",
     "AMRT.JK", "CPIN.JK", "ICBP.JK", "KLBF.JK", "ADRO.JK", "ITMG.JK", "PTBA.JK",
-    "BRIS.JK", "ARTO.JK", "MEDC.JK", "TOWR.JK", "EXCL.JK", "AKRA.JK", "BRPT.JK",
-    "AMMN.JK", "INKP.JK", "TPIA.JK", "MAPA.JK", "ACES.JK", "HRUM.JK", "PANI.JK"
+    "BRIS.JK", "ARTO.JK", "MEDC.JK", "TOWR.JK", "EXCL.JK", "AKRA.JK", "BRPT.JK"
 ]
 
-# --- DATABASE LOGIC ---
+# --- DATABASE ---
 def init_db():
     conn = sqlite3.connect('bot_data.db', check_same_thread=False)
     c = conn.cursor()
@@ -71,7 +70,6 @@ def load_modal():
 
 init_db()
 
-# --- SECURITY CHECK ---
 def is_auth(update: Update):
     uid = str(update.message.from_user.id)
     return AUTHORIZED_ID and uid == str(AUTHORIZED_ID).strip()
@@ -79,149 +77,126 @@ def is_auth(update: Update):
 # --- ANALYSIS CORE ---
 def analyze_stock(sym):
     try:
+        # Mengambil data 3 bulan terakhir
         df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
         if df is None or len(df) < 20: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         close = df["Close"]
         curr_p = float(close.iloc[-1])
-        
-        # Indikator EMA (Trend)
         ema20 = close.ewm(span=20).mean().iloc[-1]
         ema50 = close.ewm(span=50).mean().iloc[-1]
         
-        # Indikator RSI (Momentum)
         delta = close.diff()
         up = delta.clip(lower=0).rolling(14).mean().iloc[-1]
         down = (-1 * delta.clip(upper=0)).rolling(14).mean().iloc[-1]
         rsi = 100 - (100 / (1 + (up/down))) if down != 0 else 100
         
-        # Target Price (5%) & Stop Loss (3%)
         tp = curr_p * 1.05
         sl = curr_p * 0.97
         
-        # Logika Sinyal & Penjelasan
         if ema20 > ema50 and rsi > 55:
-            status = "BUY 🟢"
-            reason = "Trend Bullish (EMA Golden Cross) & Momentum Kuat (RSI > 55)."
+            status, reason = "BUY 🟢", "Trend Bullish & Momentum Kuat."
         elif ema20 < ema50 and rsi < 45:
-            status = "SELL 🔴"
-            reason = "Trend Bearish (EMA Death Cross) & Momentum Lemah (RSI < 45)."
+            status, reason = "SELL 🔴", "Trend Bearish & Momentum Lemah."
         else:
-            status = "HOLD 🟡"
-            reason = "Market sedang konsolidasi/Sideways. Tunggu konfirmasi EMA/RSI."
+            status, reason = "HOLD 🟡", "Sideways/Konsolidasi."
             
-        return {
-            "status": status, 
-            "price": curr_p, 
-            "tp": tp, 
-            "sl": sl, 
-            "reason": reason,
-            "rsi": rsi
-        }
-    except Exception as e:
-        logger.error(f"Error analyze {sym}: {e}")
-        return None
+        return {"status": status, "price": curr_p, "tp": tp, "sl": sl, "reason": reason}
+    except: return None
 
-# --- AUTO SIGNAL JOB (Tiap 5 Menit) ---
-def auto_signal_job(context: CallbackContext):
-    global USER_CHAT_ID, SENT_STOCKS
-    modal = load_modal()
-    now = datetime.now(pytz.timezone('Asia/Jakarta'))
-    
-    # Syarat: Jam Bursa Senin-Jumat 09:00-16:00
-    if USER_CHAT_ID and modal > 0 and (now.weekday() < 5 and 9 <= now.hour < 16):
-        results = []
-        found_now = []
-        
-        pool = [s for s in IHSG_RADAR if s not in SENT_STOCKS]
-        random.shuffle(pool)
-
-        for sym in pool:
-            res = analyze_stock(sym)
-            if res and "BUY" in res["status"]:
-                price_lot = res["price"] * 100
-                if modal >= price_lot:
-                    msg = (f"🔥 <b>SIGNAL BUY: {sym.replace('.JK','')}</b>\n"
-                           f"Harga: Rp{res['price']:,.0f}\n"
-                           f"🎯 TP: Rp{res['tp']:,.0f}\n"
-                           f"🛑 SL: Rp{res['sl']:,.0f}\n"
-                           f"📝 Analisa: {res['reason']}")
-                    results.append(msg)
-                    found_now.append(sym)
-            if len(results) >= 3: break
-        
-        if results:
-            SENT_STOCKS = found_now
-            text = "🚀 <b>RADAR SIGNAL (5 MENITAN)</b>\n\n" + "\n\n".join(results)
-            context.bot.send_message(chat_id=USER_CHAT_ID, text=text, parse_mode='HTML')
-
-# --- COMMAND HANDLERS ---
+# --- COMMANDS ---
 def start(update: Update, context: CallbackContext):
     if not is_auth(update): return
     global USER_CHAT_ID
     USER_CHAT_ID = update.message.chat_id
     modal = load_modal()
     if modal == 0:
-        update.message.reply_text("👋 <b>Akses Diterima!</b>\n\nSilakan masukkan <b>Modal Investasi</b> Anda (angka saja):", parse_mode='HTML')
+        update.message.reply_text("👋 Masukkan <b>Modal Investasi</b> Anda (angka saja):", parse_mode='HTML')
     else:
-        update.message.reply_text(f"✅ <b>Bot Aktif</b>\nModal: Rp{modal:,.0f}\n\n<b>Menu:</b>\n/scan - Cek Watchlist Manual\n/list - Lihat Watchlist\n/add KODE - Tambah Saham\n/remove KODE - Hapus Saham\n/ubah_modal - Ganti Modal", parse_mode='HTML')
+        update.message.reply_text(f"✅ Bot Aktif. Modal: Rp{modal:,.0f}\n/scan untuk cek watchlist.")
+
+def scan_watchlist(update: Update, context: CallbackContext):
+    if not is_auth(update): return
+    stocks = db_manage_watchlist("list")
+    if not stocks:
+        update.message.reply_text("Watchlist kosong. Gunakan /add KODE")
+        return
+
+    # Kirim pesan status awal
+    status_msg = update.message.reply_text("🔎 Sedang menganalisa... Mohon tunggu.")
+    
+    final_report = "🔎 <b>HASIL SCAN WATCHLIST</b>\n\n"
+    for s in stocks:
+        res = analyze_stock(s)
+        if res:
+            final_report += (f"<b>{s.replace('.JK','')}</b> | {res['status']}\n"
+                             f"💰 Harga: {res['price']:,.0f}\n"
+                           f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}\n"
+                           f"📝 {res['reason']}\n\n")
+        else:
+            final_report += f"❌ <b>{s}</b>: Gagal mengambil data.\n\n"
+    
+    # Kirim satu pesan besar berisi semua hasil
+    context.bot.edit_message_text(
+        chat_id=update.message.chat_id,
+        message_id=status_msg.message_id,
+        text=final_report,
+        parse_mode='HTML'
+    )
 
 def handle_text(update: Update, context: CallbackContext):
     if not is_auth(update): return
     text = update.message.text.strip()
     if text.isdigit():
-        val = int(text)
-        save_modal(val)
-        update.message.reply_text(f"✅ Modal disimpan: <b>Rp{val:,.0f}</b>\nSinyal otomatis akan berjalan tiap 5 menit jika modal cukup untuk membeli 1 lot saham.", parse_mode='HTML')
+        save_modal(int(text))
+        update.message.reply_text(f"✅ Modal diset: Rp{int(text):,.0f}")
 
 def add_stock(update: Update, context: CallbackContext):
     if not is_auth(update) or not context.args: return
     sym = context.args[0].upper()
     if ".JK" not in sym: sym += ".JK"
     db_manage_watchlist("add", sym)
-    update.message.reply_text(f"✅ {sym} berhasil ditambah.")
+    update.message.reply_text(f"✅ {sym} ditambah.")
 
 def remove_stock(update: Update, context: CallbackContext):
     if not is_auth(update) or not context.args: return
     sym = context.args[0].upper()
-    if ".JK" not in sym: sym += ".JK"
-    db_manage_watchlist("remove", sym)
+    db_manage_watchlist("remove", sym + ".JK" if ".JK" not in sym else sym)
     update.message.reply_text(f"🗑 {sym} dihapus.")
 
 def list_watchlist(update: Update, context: CallbackContext):
     if not is_auth(update): return
-    stocks = db_manage_watchlist("list")
-    txt = "📋 <b>Watchlist Manual:</b>\n" + "\n".join([f"- {s}" for s in stocks]) if stocks else "Kosong."
-    update.message.reply_text(txt, parse_mode='HTML')
-
-def scan_watchlist(update: Update, context: CallbackContext):
-    if not is_auth(update): return
-    stocks = db_manage_watchlist("list")
-    if not stocks:
-        update.message.reply_text("Gunakan /add dulu untuk mengisi watchlist.")
-        return
-    update.message.reply_text("🔎 Menganalisa watchlist manual...")
-    for s in stocks:
-        res = analyze_stock(s)
-        if res:
-            msg = (f"🔍 <b>{s.replace('.JK','')}</b>\n"
-                   f"Status: {res['status']}\n"
-                   f"Harga: Rp{res['price']:,.0f}\n"
-                   f"🎯 TP: Rp{res['tp']:,.0f}\n"
-                   f"🛑 SL: Rp{res['sl']:,.0f}\n"
-                   f"📝 Analisa: {res['reason']}")
-            update.message.reply_text(msg, parse_mode='HTML')
+    s = db_manage_watchlist("list")
+    update.message.reply_text(f"📋 Watchlist: {', '.join(s) if s else 'Kosong'}")
 
 def ubah_modal(update: Update, context: CallbackContext):
     if not is_auth(update): return
-    update.message.reply_text("Silakan masukkan nominal modal baru Anda:")
+    update.message.reply_text("Masukkan modal baru:")
 
-# --- RUNNER ---
+# --- AUTO SIGNAL (5 MENIT) ---
+def auto_signal_job(context: CallbackContext):
+    global USER_CHAT_ID, SENT_STOCKS
+    modal = load_modal()
+    now = datetime.now(pytz.timezone('Asia/Jakarta'))
+    if USER_CHAT_ID and modal > 0 and (now.weekday() < 5 and 9 <= now.hour < 16):
+        results = []
+        found_now = []
+        pool = [s for s in IHSG_RADAR if s not in SENT_STOCKS]
+        random.shuffle(pool)
+        for sym in pool:
+            res = analyze_stock(sym)
+            if res and "BUY" in res["status"] and modal >= (res["price"] * 100):
+                results.append(f"🔥 <b>BUY: {sym.replace('.JK','')}</b>\nHarga: {res['price']:,.0f}\n🎯 TP: {res['tp']:,.0f}\n📝 {res['reason']}")
+                found_now.append(sym)
+            if len(results) >= 3: break
+        if results:
+            SENT_STOCKS = found_now
+            context.bot.send_message(chat_id=USER_CHAT_ID, text="🚀 <b>UPDATE SIGNAL</b>\n\n"+"\n\n".join(results), parse_mode='HTML')
+
 if __name__ == '__main__':
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
-    
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("add", add_stock))
     dp.add_handler(CommandHandler("remove", remove_stock))
@@ -229,11 +204,10 @@ if __name__ == '__main__':
     dp.add_handler(CommandHandler("scan", scan_watchlist))
     dp.add_handler(CommandHandler("ubah_modal", ubah_modal))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
-
+    
     scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
     scheduler.add_job(auto_signal_job, 'interval', minutes=5, args=[updater])
     scheduler.start()
-
-    logger.info("Bot Online...")
+    
     updater.start_polling(drop_pending_updates=True)
     updater.idle()
