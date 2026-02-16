@@ -21,12 +21,17 @@ AUTHORIZED_ID = os.environ.get("MY_ID")
 USER_CHAT_ID = None
 SENT_STOCKS = [] 
 
-# --- DAFTAR RADAR IHSG (Auto Update) ---
+# --- RADAR SAHAM KONGLO (Harga Terjangkau / Penny Stocks) ---
+# Berisi saham Grup Bakrie, MNC, Barito, Lippo, Panin, dll.
 IHSG_RADAR = [
-    "ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "GOTO.JK",
-    "ASSA.JK", "BUMI.JK", "ANTM.JK", "MDKA.JK", "INCO.JK", "PGAS.JK", "UNTR.JK",
-    "AMRT.JK", "CPIN.JK", "ICBP.JK", "KLBF.JK", "ADRO.JK", "ITMG.JK", "PTBA.JK",
-    "BRIS.JK", "ARTO.JK", "MEDC.JK", "TOWR.JK", "EXCL.JK", "AKRA.JK", "BRPT.JK"
+    "BUMI.JK", "BRMS.JK", "ENRG.JK", "DEWA.JK", # Grup Bakrie
+    "BHIT.JK", "KPIG.JK", "MNCN.JK", "IPTV.JK", # Grup MNC
+    "MLPL.JK", "MPPA.JK", "LPKR.JK",            # Grup Lippo
+    "BRPT.JK", "TPIA.JK",                       # Grup Barito
+    "PNLF.JK", "PNIN.JK", "PANS.JK",            # Grup Panin
+    "GOTO.JK", "BUKA.JK", "BELI.JK",            # Tech/E-commerce
+    "ASSA.JK", "PANI.JK", "ADMR.JK", "DOID.JK", # Saham Ramai Lapis 2
+    "KIJA.JK", "GWSA.JK", "KOTA.JK", "BSBK.JK"  # Properti/Penny
 ]
 
 # --- DATABASE ---
@@ -77,7 +82,6 @@ def is_auth(update: Update):
 # --- ANALYSIS CORE ---
 def analyze_stock(sym):
     try:
-        # Mengambil data 3 bulan terakhir
         df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
         if df is None or len(df) < 20: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -114,7 +118,7 @@ def start(update: Update, context: CallbackContext):
     if modal == 0:
         update.message.reply_text("👋 Masukkan <b>Modal Investasi</b> Anda (angka saja):", parse_mode='HTML')
     else:
-        update.message.reply_text(f"✅ Bot Aktif. Modal: Rp{modal:,.0f}\n/scan untuk cek watchlist.")
+        update.message.reply_text(f"✅ Bot Aktif. Modal: Rp{modal:,.0f}\n\nPerintah:\n/scan - Analisa Watchlist\n/add - Tambah Saham\n/remove - Hapus Saham\n/list - Lihat Watchlist\n/ubah_modal - Ganti Modal\n/tes_notif - Tes Kirim Sinyal")
 
 def scan_watchlist(update: Update, context: CallbackContext):
     if not is_auth(update): return
@@ -123,34 +127,17 @@ def scan_watchlist(update: Update, context: CallbackContext):
         update.message.reply_text("Watchlist kosong. Gunakan /add KODE")
         return
 
-    # Kirim pesan status awal
-    status_msg = update.message.reply_text("🔎 Sedang menganalisa... Mohon tunggu.")
-    
+    status_msg = update.message.reply_text("🔎 Menganalisa Watchlist... Tunggu sebentar.")
     final_report = "🔎 <b>HASIL SCAN WATCHLIST</b>\n\n"
+    
     for s in stocks:
         res = analyze_stock(s)
         if res:
             final_report += (f"<b>{s.replace('.JK','')}</b> | {res['status']}\n"
-                             f"💰 Harga: {res['price']:,.0f}\n"
-                           f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}\n"
-                           f"📝 {res['reason']}\n\n")
-        else:
-            final_report += f"❌ <b>{s}</b>: Gagal mengambil data.\n\n"
+                             f"💰 Harga: Rp{res['price']:,.0f}\n"
+                             f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}\n\n")
     
-    # Kirim satu pesan besar berisi semua hasil
-    context.bot.edit_message_text(
-        chat_id=update.message.chat_id,
-        message_id=status_msg.message_id,
-        text=final_report,
-        parse_mode='HTML'
-    )
-
-def handle_text(update: Update, context: CallbackContext):
-    if not is_auth(update): return
-    text = update.message.text.strip()
-    if text.isdigit():
-        save_modal(int(text))
-        update.message.reply_text(f"✅ Modal diset: Rp{int(text):,.0f}")
+    context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=status_msg.message_id, text=final_report, parse_mode='HTML')
 
 def add_stock(update: Update, context: CallbackContext):
     if not is_auth(update) or not context.args: return
@@ -172,37 +159,55 @@ def list_watchlist(update: Update, context: CallbackContext):
 
 def ubah_modal(update: Update, context: CallbackContext):
     if not is_auth(update): return
-    update.message.reply_text("Masukkan modal baru:")
+    update.message.reply_text("Masukkan nominal modal baru Anda:")
+
+def tes_notif(update: Update, context: CallbackContext):
+    if not is_auth(update): return
+    update.message.reply_text("🛠 <b>Tes Koneksi Berhasil!</b>\nJika pesan ini masuk, notifikasi otomatis siap menyala besok pagi jam 09:00 WIB.", parse_mode='HTML')
+
+def handle_text(update: Update, context: CallbackContext):
+    if not is_auth(update): return
+    text = update.message.text.strip()
+    if text.isdigit():
+        save_modal(int(text))
+        update.message.reply_text(f"✅ Modal diset: Rp{int(text):,.0f}\nBot akan scan saham konglo puluhan/ratusan perak tiap 5 menit.")
 
 # --- AUTO SIGNAL (5 MENIT) ---
 def auto_signal_job(context: CallbackContext):
     global USER_CHAT_ID, SENT_STOCKS
     modal = load_modal()
     now = datetime.now(pytz.timezone('Asia/Jakarta'))
+    
+    # Senin-Jumat jam 09:00 - 16:00
     if USER_CHAT_ID and modal > 0 and (now.weekday() < 5 and 9 <= now.hour < 16):
         results = []
         found_now = []
         pool = [s for s in IHSG_RADAR if s not in SENT_STOCKS]
         random.shuffle(pool)
+        
         for sym in pool:
             res = analyze_stock(sym)
-            if res and "BUY" in res["status"] and modal >= (res["price"] * 100):
-                results.append(f"🔥 <b>BUY: {sym.replace('.JK','')}</b>\nHarga: {res['price']:,.0f}\n🎯 TP: {res['tp']:,.0f}\n📝 {res['reason']}")
-                found_now.append(sym)
+            if res and "BUY" in res["status"]:
+                if modal >= (res["price"] * 100): # Masuk budget modal 1 lot
+                    results.append(f"🔥 <b>BUY: {sym.replace('.JK','')}</b>\nHarga: {res['price']:,.0f}\n🎯 TP: {res['tp']:,.0f}\n🛑 SL: {res['sl']:,.0f}\n📝 {res['reason']}")
+                    found_now.append(sym)
             if len(results) >= 3: break
+        
         if results:
             SENT_STOCKS = found_now
-            context.bot.send_message(chat_id=USER_CHAT_ID, text="🚀 <b>UPDATE SIGNAL</b>\n\n"+"\n\n".join(results), parse_mode='HTML')
+            context.bot.send_message(chat_id=USER_CHAT_ID, text="🚀 <b>RADAR KONGLO (5 MENITAN)</b>\n\n"+"\n\n".join(results), parse_mode='HTML')
 
 if __name__ == '__main__':
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
+    
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("add", add_stock))
     dp.add_handler(CommandHandler("remove", remove_stock))
     dp.add_handler(CommandHandler("list", list_watchlist))
     dp.add_handler(CommandHandler("scan", scan_watchlist))
     dp.add_handler(CommandHandler("ubah_modal", ubah_modal))
+    dp.add_handler(CommandHandler("tes_notif", tes_notif))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
     
     scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
