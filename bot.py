@@ -1,77 +1,91 @@
 import os
 import yfinance as yf
 import pandas as pd
-import ta
 import requests
 from telegram import Update
-from telegram.ext import (
-    Updater,
-    CommandHandler,
-    CallbackContext,
-)
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
-# ===== AMAN & JELAS =====
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# Gunakan list global (akan reset jika bot restart di Railway)
+# Untuk permanen, idealnya menggunakan Database seperti Supabase/PostgreSQL
+current_watchlist = ["BUMI.JK", "BBCA.JK", "BBRI.JK", "ANTM.JK"]
 
-if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN belum diset di Railway Variables!")
-
-CHAT_ID = os.environ.get("CHAT_ID_USER")
-
-watchlist = ["BUMI.JK","BBCA.JK","BUVA.JK","BBRI.JK","BMRI.JK","ANTM.JK"]
-
-def send_msg(chat_id, text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id":chat_id, "text":text})
-
-def analyze_symbol(sym, close_prices):
-    # hitung EMA, RSI dst
-    close = close_prices
-    if len(close) < 20:
-        return None
+def analyze_symbol(sym, df):
+    if len(df) < 50:
+        return "Data Tidak Cukup", "Butuh minimal 50 hari data."
     
+    close = df["Close"]
     ema20 = close.ewm(span=20).mean().iloc[-1]
     ema50 = close.ewm(span=50).mean().iloc[-1]
     
-    # RSI manual contoh
+    # RSI Calculation
     delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta).clip(lower=0).rolling(14).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
-    rsi = 100 - (100 / (1+rs))
+    rsi = 100 - (100 / (1 + rs.iloc[-1]))
     
-    signal = None
-    if ema20 > ema50 and rsi.iloc[-1] > 55:
-        signal = "BUY"
-    elif ema20 < ema50 and rsi.iloc[-1] < 45:
-        signal = "SELL"
+    # Logika Sinyal & Alasan
+    if ema20 > ema50 and rsi > 55:
+        reason = f"Tren naik (EMA20 > EMA50) & Momentum kuat (RSI: {rsi:.1f})"
+        return "BUY 🟢", reason
+    elif ema20 < ema50 and rsi < 45:
+        reason = f"Tren turun (EMA20 < EMA50) & Momentum lemah (RSI: {rsi:.1f})"
+        return "SELL 🔴", reason
     else:
-        signal = "HOLD"
-    return signal
+        reason = f"Konsolidasi / Sideways (RSI: {rsi:.1f})"
+        return "HOLD 🟡", reason
 
 def scan(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
+    update.message.reply_text("Sedang memproses data, mohon tunggu...")
     msgs = []
-    for sym in watchlist:
-        df = yf.download(sym, period="1mo", interval="1d", auto_adjust=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        signal = analyze_symbol(sym, df["Close"])
-        msgs.append(f"{sym.replace('.JK','')}: {signal}")
-    send_msg(chat_id, "\n".join(msgs))
+    for sym in current_watchlist:
+        try:
+            df = yf.download(sym, period="3mo", interval="1d", progress=False)
+            if df.empty: continue
+            
+            signal, reason = analyze_symbol(sym, df)
+            name = sym.replace('.JK','')
+            msgs.append(f"<b>{name}</b>: {signal}\n└ <i>{reason}</i>")
+        except Exception as e:
+            msgs.append(f"{sym}: Error ambil data")
 
-# telegram commands
+    update.message.reply_text("\n\n".join(msgs), parse_mode='HTML')
+
+def add_watchlist(update: Update, context: CallbackContext):
+    if not context.args:
+        update.message.reply_text("Contoh cara pakai: /add ASII.JK")
+        return
+    
+    new_stock = context.args[0].upper()
+    if ".JK" not in new_stock:
+        new_stock += ".JK"
+        
+    if new_stock not in current_watchlist:
+        current_watchlist.append(new_stock)
+        update.message.reply_text(f"✅ {new_stock} berhasil ditambah ke watchlist!")
+    else:
+        update.message.reply_text(f"ℹ️ {new_stock} sudah ada di daftar.")
+
+def show_list(update: Update, context: CallbackContext):
+    pilihan = "\n".join([f"- {s}" for s in current_watchlist])
+    update.message.reply_text(f"Daftar Pantau Saat Ini:\n{pilihan}")
+
 def start(update: Update, context: CallbackContext):
-    send_msg(update.effective_chat.id, "Bot siap! Gunakan /scan untuk analisis.")
-
-def cmd_scan(update: Update, context: CallbackContext):
-    scan(update, context)
+    update.message.reply_text(
+        "Bot Saham Aktif!\n\n"
+        "Commands:\n"
+        "/scan - Analisis semua watchlist\n"
+        "/add [KODE] - Tambah saham (contoh: /add TLKM.JK)\n"
+        "/list - Lihat daftar saham"
+    )
 
 updater = Updater(TOKEN)
-
-updater.dispatcher.add_handler(CommandHandler("start", start))
-updater.dispatcher.add_handler(CommandHandler("scan", cmd_scan))
+dp = updater.dispatcher
+dp.add_handler(CommandHandler("start", start))
+dp.add_handler(CommandHandler("scan", scan))
+dp.add_handler(CommandHandler("add", add_watchlist))
+dp.add_handler(CommandHandler("list", show_list))
 
 updater.start_polling()
-
 updater.idle()
