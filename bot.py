@@ -5,138 +5,106 @@ from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 import logging
 
-# 1. Setup Logging agar bisa memantau aktivitas bot di Railway Logs
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# 2. Ambil Token dari environment variable Railway
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-
-# 3. Daftar saham awal (Watchlist Default)
 watchlist = ["BUMI.JK", "BBCA.JK", "BUVA.JK", "BBRI.JK", "BMRI.JK", "ANTM.JK"]
 
 def analyze_symbol(sym, df):
-    """Menganalisis tren, tenaga beli, dan mengambil harga terakhir."""
     if len(df) < 50:
-        return "DATA KURANG", 0, "Butuh data lebih banyak untuk analisis."
-    
-    # Mengambil harga terakhir (Real-time saat bursa buka, atau Close terakhir jika tutup)
-    current_price = df["Close"].iloc[-1]
+        return None
     
     close = df["Close"]
-    # Indikator Tren: EMA 20 dan EMA 50
+    volume = df["Volume"]
+    
+    # 1. Indikator EMA
     ema20 = close.ewm(span=20).mean().iloc[-1]
     ema50 = close.ewm(span=50).mean().iloc[-1]
     
-    # Indikator Tenaga Beli: RSI 14
+    # 2. Indikator RSI
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(window=14).mean()
     loss = (-delta).clip(lower=0).rolling(window=14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs.iloc[-1]))
     
-    # Logika Penentuan Sinyal dan Penjelasan Deskriptif
+    # 3. Indikator Volume (Cek jika di atas rata-rata 20 hari)
+    avg_vol = volume.rolling(window=20).mean().iloc[-1]
+    current_vol = volume.iloc[-1]
+    vol_status = "Tinggi 📈" if current_vol > avg_vol else "Rendah 📉"
+    
+    current_price = close.iloc[-1]
+    
+    # 4. Hitung Target Harga (Sederhana: TP 5%, SL 3%)
+    tp_price = current_price * 1.05
+    sl_price = current_price * 0.97
+    
+    # Logika Sinyal
     if ema20 > ema50 and rsi > 55:
         status = "BUY 🟢"
-        reason = "Tren menguat (Bullish) & tenaga beli sangat besar."
+        reason = f"Tren Bullish, Vol: {vol_status}"
+        trade_plan = f"🎯 TP: {tp_price:,.0f}\n🛑 SL: {sl_price:,.0f}"
     elif ema20 < ema50 and rsi < 45:
         status = "SELL 🔴"
-        reason = "Tren melemah (Bearish) & harga cenderung turun."
+        reason = f"Tren Bearish, Vol: {vol_status}"
+        trade_plan = "⚠️ Segera amankan modal."
     else:
-        # Penjelasan tambahan untuk kondisi bimbang (Hold)
-        if ema20 > ema50:
-            status = "HOLD 🟡"
-            reason = "Tren naik tapi tenaga beli mulai jenuh/lemah."
-        else:
-            status = "HOLD 🟡"
-            reason = "Pasar sedang bimbang atau bergerak menyamping (Sideways)."
-            
-    return status, current_price, reason
-
-def start(update: Update, context: CallbackContext):
-    """Pesan sambutan saat user mengetik /start."""
-    update.message.reply_text(
-        "👋 <b>Bot SwingWatchBit Aktif!</b>\n\n"
-        "Anda bisa mematikan laptop dan bot akan tetap bekerja.\n\n"
-        "<b>Perintah:</b>\n"
-        "/scan - Cek harga & sinyal saham (Real-time)\n"
-        "/add [KODE] - Tambah saham (contoh: /add ASII.JK)\n"
-        "/list - Lihat daftar saham yang dipantau",
-        parse_mode='HTML'
-    )
+        status = "HOLD 🟡"
+        reason = f"Sideways/Bimbang, Vol: {vol_status}"
+        trade_plan = "⌛ Tunggu konfirmasi tren."
+        
+    return {
+        "status": status,
+        "price": current_price,
+        "reason": reason,
+        "plan": trade_plan
+    }
 
 def scan(update: Update, context: CallbackContext):
-    """Mengambil data pasar dan mengirimkan hasil analisis ke user."""
-    update.message.reply_text("🔎 Sedang mengambil data real-time, mohon tunggu...")
+    update.message.reply_text("🔎 Menganalisis dengan Volume & Trade Plan...")
     results = []
     
     for sym in watchlist:
         try:
-            # Download data 3 bulan terakhir (Daily)
             df = yf.download(sym, period="3mo", interval="1d", progress=False)
-            
-            if df.empty:
-                continue
-            
-            # Membersihkan format data MultiIndex jika ada
+            if df.empty: continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             
-            status, last_price, reason = analyze_symbol(sym, df)
+            res = analyze_symbol(sym, df)
             clean_sym = sym.replace('.JK','')
             
-            # Format pesan: Nama Saham | Harga | Sinyal | Alasan
             results.append(
-                f"<b>{clean_sym}</b> | Rp{last_price:,.0f}\n"
-                f"Sinyal: {status}\n"
-                f"└ <i>{reason}</i>"
+                f"<b>{clean_sym}</b> | Rp{res['price']:,.0f}\n"
+                f"Sinyal: {res['status']}\n"
+                f"Analisa: {res['reason']}\n"
+                f"{res['plan']}"
             )
-        except Exception as e:
-            logging.error(f"Error pada {sym}: {e}")
-            results.append(f"❌ {sym}: Gagal dianalisis.")
+        except:
+            results.append(f"❌ {sym}: Gagal")
 
     if results:
         update.message.reply_text("\n\n".join(results), parse_mode='HTML')
-    else:
-        update.message.reply_text("Watchlist kosong. Gunakan /add untuk menambah saham.")
+
+# Fungsi start, add, list tetap sama seperti sebelumnya
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("👋 <b>SwingWatchBit Pro Aktif!</b>\n\n/scan - Analisis Lengkap\n/add - Tambah Saham\n/list - Cek Watchlist", parse_mode='HTML')
 
 def add_stock(update: Update, context: CallbackContext):
-    """Menambah saham baru ke dalam daftar sementara."""
-    if not context.args:
-        update.message.reply_text("Gunakan format: /add KODE.JK\nContoh: /add TLKM.JK")
-        return
-    
+    if not context.args: return
     code = context.args[0].upper()
-    if ".JK" not in code:
-        code += ".JK"
-    
-    if code not in watchlist:
-        watchlist.append(code)
-        update.message.reply_text(f"✅ <b>{code}</b> berhasil ditambahkan!")
-    else:
-        update.message.reply_text(f"ℹ️ {code} sudah ada di daftar.")
+    if ".JK" not in code: code += ".JK"
+    if code not in watchlist: watchlist.append(code); update.message.reply_text(f"✅ {code} Added")
 
 def list_watchlist(update: Update, context: CallbackContext):
-    """Menampilkan semua saham yang ada di watchlist saat ini."""
-    msg = "📋 <b>Daftar Pantauan Anda:</b>\n\n" + "\n".join([f"- {s}" for s in watchlist])
-    update.message.reply_text(msg, parse_mode='HTML')
+    update.message.reply_text("📋 <b>Watchlist:</b>\n" + "\n".join(watchlist), parse_mode='HTML')
 
 if __name__ == '__main__':
-    if not TOKEN:
-        print("ERROR: Variabel TELEGRAM_BOT_TOKEN tidak ditemukan!")
-    else:
-        updater = Updater(TOKEN)
-        dp = updater.dispatcher
-
-        # Mendaftarkan semua perintah (Handlers)
-        dp.add_handler(CommandHandler("start", start))
-        dp.add_handler(CommandHandler("scan", scan))
-        dp.add_handler(CommandHandler("add", add_stock))
-        dp.add_handler(CommandHandler("list", list_watchlist))
-
-        print("Bot Berjalan di Railway...")
-        # drop_pending_updates=True untuk mencegah bot 'balas dendam' chat lama saat baru nyala
-        updater.start_polling(drop_pending_updates=True)
-        updater.idle()
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("scan", scan))
+    dp.add_handler(CommandHandler("add", add_stock))
+    dp.add_handler(CommandHandler("list", list_watchlist))
+    updater.start_polling(drop_pending_updates=True)
+    updater.idle()
