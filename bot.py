@@ -15,12 +15,11 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 USER_CHAT_ID = None 
 
-# --- DATABASE LOGIC (Sistem Penyimpanan Permanen) ---
+# --- DATABASE LOGIC ---
 def init_db():
     conn = sqlite3.connect('watchlist.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS stocks (symbol TEXT PRIMARY KEY)''')
-    # Saham default hanya dimasukkan jika database kosong
     c.execute("SELECT count(*) FROM stocks")
     if c.fetchone()[0] == 0:
         default_stocks = ["BUMI.JK", "BBCA.JK", "BUVA.JK", "BBRI.JK", "BMRI.JK", "ANTM.JK"]
@@ -51,27 +50,21 @@ def remove_from_db(symbol):
     conn.commit()
     conn.close()
 
-# Jalankan inisialisasi database
 init_db()
 
-# --- LOGIKA PASAR (Waktu Jakarta) ---
+# --- MARKET LOGIC ---
 def is_market_open():
     tz_jakarta = pytz.timezone('Asia/Jakarta')
     now = datetime.now(tz_jakarta)
     day_of_week = now.weekday()
     current_time = now.time()
-    
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("16:00", "%H:%M").time()
-    
-    # Senin-Jumat jam 09:00-16:00
     return day_of_week < 5 and (start_time <= current_time <= end_time)
 
-# --- ANALISIS TEKNIKAL ---
+# --- ANALYSIS LOGIC ---
 def analyze_symbol(sym, df):
     if df is None or len(df) < 20: return None
-    
-    # Membersihkan format data yfinance
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     
@@ -79,22 +72,18 @@ def analyze_symbol(sym, df):
     volume = df["Volume"]
     current_price = float(close.iloc[-1])
     
-    # EMA (Exponential Moving Average)
     ema20 = close.ewm(span=20).mean().iloc[-1]
     ema50 = close.ewm(span=50).mean().iloc[-1]
     
-    # RSI (Relative Strength Index)
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(window=14).mean()
     loss = (-delta).clip(lower=0).rolling(window=14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs.iloc[-1]))
     
-    # Volume Analysis
     avg_vol = volume.rolling(window=20).mean().iloc[-1]
     vol_status = "Tinggi 📈" if float(volume.iloc[-1]) > float(avg_vol) else "Rendah 📉"
     
-    # Risk/Reward Plan
     tp = current_price * 1.05
     sl = current_price * 0.97
     clean_name = sym.replace('.JK','')
@@ -113,7 +102,7 @@ def analyze_symbol(sym, df):
     
     return {"status": status, "msg": msg}
 
-# --- FUNGSI OTOMATIS (AUTO-SIGNAL) ---
+# --- AUTO SCAN JOB ---
 def auto_scan_job(context: CallbackContext):
     global USER_CHAT_ID
     if USER_CHAT_ID and is_market_open():
@@ -121,15 +110,70 @@ def auto_scan_job(context: CallbackContext):
         results = []
         for sym in current_watchlist:
             try:
-                # auto_adjust=True memastikan harga GOTO dkk akurat
                 df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
                 res = analyze_symbol(sym, df)
-                # Hanya kirim jika sinyal BUY atau SELL
                 if res and (res["status"] == "BUY 🟢" or res["status"] == "SELL 🔴"):
                     results.append(res["msg"])
             except: continue
         
         if results:
-            context.bot.send_message(
-                chat_id=USER_CHAT_ID, 
-                text="🔔 <b>AUTO
+            # BAGIAN YANG TADI ERROR SUDAH DIPERBAIKI DI BAWAH INI
+            full_text = "🔔 <b>AUTO-SIGNAL UPDATE</b>\n\n" + "\n\n".join(results)
+            context.bot.send_message(chat_id=USER_CHAT_ID, text=full_text, parse_mode='HTML')
+
+# --- COMMANDS ---
+def start(update: Update, context: CallbackContext):
+    global USER_CHAT_ID
+    USER_CHAT_ID = update.message.chat_id
+    update.message.reply_text(
+        "🚀 <b>SwingWatchBit Pro Aktif!</b>\n\n/add KODE\n/remove KODE\n/list\n/scan",
+        parse_mode='HTML'
+    )
+
+def scan(update: Update, context: CallbackContext):
+    update.message.reply_text("🔎 Menganalisis pasar manual...")
+    current_watchlist = get_watchlist()
+    results = []
+    for sym in current_watchlist:
+        try:
+            df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
+            res = analyze_symbol(sym, df)
+            if res: results.append(res["msg"])
+        except: continue
+    if results:
+        update.message.reply_text("\n\n".join(results), parse_mode='HTML')
+
+def add_stock(update: Update, context: CallbackContext):
+    if not context.args: return
+    code = context.args[0].upper()
+    if ".JK" not in code: code += ".JK"
+    add_to_db(code)
+    update.message.reply_text(f"✅ {code} tersimpan!")
+
+def remove_stock(update: Update, context: CallbackContext):
+    if not context.args: return
+    code = context.args[0].upper()
+    if ".JK" not in code: code += ".JK"
+    remove_from_db(code)
+    update.message.reply_text(f"🗑 {code} dihapus.")
+
+def list_watchlist(update: Update, context: CallbackContext):
+    current_watchlist = get_watchlist()
+    msg = "📋 <b>Watchlist:</b>\n\n" + "\n".join([f"- {s}" for s in current_watchlist])
+    update.message.reply_text(msg, parse_mode='HTML')
+
+if __name__ == '__main__':
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("scan", scan))
+    dp.add_handler(CommandHandler("add", add_stock))
+    dp.add_handler(CommandHandler("remove", remove_stock))
+    dp.add_handler(CommandHandler("list", list_watchlist))
+
+    scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
+    scheduler.add_job(auto_scan_job, 'interval', minutes=5, args=[updater])
+    scheduler.start()
+
+    updater.start_polling(drop_pending_updates=True)
+    updater.idle()
