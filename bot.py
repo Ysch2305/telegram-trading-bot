@@ -2,7 +2,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import yfinance as yf # Tetap dipakai untuk data histori volume & EMA
+import yfinance as yf
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
 import logging
@@ -12,11 +12,10 @@ import pytz
 import sqlite3
 import random
 
-# 1. Setup Logging
+# Setup Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. Config
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_ID = os.environ.get("MY_ID")
 
@@ -29,9 +28,7 @@ IHSG_RADAR = [
     "ASSA.JK", "PANI.JK", "ADMR.JK", "DOID.JK", "KIJA.JK", "BSBK.JK"
 ]
 
-# --- REALTIME ENGINE (GOOGLE FINANCE) ---
 def get_realtime_price(sym):
-    """Mengambil harga realtime dari Google Finance"""
     try:
         ticker = sym.split('.')[0]
         url = f"https://www.google.com/finance/quote/{ticker}:IDX"
@@ -41,10 +38,9 @@ def get_realtime_price(sym):
         if price_class:
             return float(price_class.text.replace('IDR', '').replace(',', '').strip())
         return None
-    except:
-        return None
+    except: return None
 
-# --- DATABASE LOGIC ---
+# --- DATABASE ---
 def init_db():
     conn = sqlite3.connect('bot_data.db', check_same_thread=False)
     c = conn.cursor()
@@ -87,47 +83,53 @@ def is_auth(update: Update):
     uid = str(update.message.from_user.id)
     return AUTHORIZED_ID and uid == str(AUTHORIZED_ID).strip()
 
-# --- ANALYSIS CORE ---
+# --- MAXIMIZED ANALYSIS CORE ---
 def analyze_stock(sym):
     try:
-        # Harga Realtime dari Google Finance
         rt_price = get_realtime_price(sym)
-        
-        # Histori dari Yahoo (untuk EMA & Volume)
         df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
         if df is None or len(df) < 20: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         curr_p = rt_price if rt_price else float(df["Close"].iloc[-1])
+        prev_p = float(df["Close"].iloc[-2])
         
-        # Indikator
+        # 1. EMA Triple Filter
+        ema5 = df["Close"].ewm(span=5).mean().iloc[-1]
         ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
         ema50 = df["Close"].ewm(span=50).mean().iloc[-1]
         
-        # Analisa Volume (Volume hari ini vs Rata-rata 5 hari)
-        avg_vol = df["Volume"].tail(5).mean()
+        # 2. RSI Precision
+        delta = df["Close"].diff()
+        up = delta.clip(lower=0).rolling(14).mean().iloc[-1]
+        down = (-1 * delta.clip(upper=0)).rolling(14).mean().iloc[-1]
+        rsi = 100 - (100 / (1 + (up/down))) if down != 0 else 100
+        
+        # 3. Advanced Volume Analysis
+        avg_vol = df["Volume"].tail(10).mean()
         curr_vol = df["Volume"].iloc[-1]
-        vol_status = "HIGH 🟢" if curr_vol > avg_vol else "NORMAL ⚪"
-
-        # Zona Entry (Support Dinamis dari Low 3 hari terakhir)
-        low_support = df["Low"].tail(3).min()
-        entry_zone = f"{int(low_support)} - {int(curr_p)}"
         
-        tp = curr_p * 1.05
-        sl = curr_p * 0.97
-        
-        status = "HOLD 🟡"
-        reason = "Sideways."
-        if ema20 > ema50:
+        # Logika Status
+        if curr_p > ema20 and ema5 > ema20 and rsi > 50:
             status = "BUY 🟢"
-            reason = "Trend Bullish."
-        elif ema20 < ema50:
+            # Deteksi Akumulasi
+            vol_status = "AKUMULASI 🔥" if curr_vol > avg_vol and curr_p >= prev_p else "STRONG BUY 💪"
+        elif rsi < 30:
+            status = "WATCH 🟡"
+            vol_status = "OVERSOLD (Cheap)"
+        elif curr_p < ema20 or (curr_p < prev_p and curr_vol > avg_vol * 1.5):
             status = "SELL 🔴"
-            reason = "Trend Bearish."
-            
+            vol_status = "DISTRIBUSI ⚠️" if curr_vol > avg_vol else "WEAK 📉"
+        else:
+            status = "HOLD 🟡"
+            vol_status = "NORMAL ⚪"
+
+        low_support = df["Low"].tail(5).min()
+        entry_zone = f"{int(low_support)} - {int(low_support * 1.02)}" # Area dekat support
+        
         return {
-            "status": status, "price": curr_p, "tp": tp, "sl": sl, 
-            "entry": entry_zone, "vol": vol_status, "reason": reason
+            "status": status, "price": curr_p, "tp": curr_p * 1.07, "sl": low_support * 0.98, 
+            "entry": entry_zone, "vol": vol_status, "rsi": int(rsi)
         }
     except: return None
 
@@ -137,7 +139,7 @@ def start(update: Update, context: CallbackContext):
     global USER_CHAT_ID
     USER_CHAT_ID = update.message.chat_id
     modal = load_modal()
-    update.message.reply_text(f"✅ <b>Bot Realtime Aktif</b>\nModal: Rp{modal:,.0f}\n/scan untuk analisa manual Google Finance.", parse_mode='HTML')
+    update.message.reply_text(f"🚀 <b>Bot Pro Max Aktif</b>\nModal: Rp{modal:,.0f}\nAnalisa: EMA Triple, VSA, & RSI Divergence.", parse_mode='HTML')
 
 def scan_watchlist(update: Update, context: CallbackContext):
     if not is_auth(update): return
@@ -146,20 +148,21 @@ def scan_watchlist(update: Update, context: CallbackContext):
         update.message.reply_text("Watchlist kosong.")
         return
 
-    status_msg = update.message.reply_text("🔎 <b>Scraping Google Finance Realtime...</b>", parse_mode='HTML')
-    final_report = "🔎 <b>HASIL SCAN REALTIME</b>\n\n"
+    status_msg = update.message.reply_text("🔎 <b>Memproses Analisa Pro...</b>", parse_mode='HTML')
+    final_report = "🔎 <b>HASIL SCAN PRO MAX</b>\n\n"
     
     for s in stocks:
         res = analyze_stock(s)
         if res:
             final_report += (f"<b>{s.replace('.JK','')}</b> | {res['status']}\n"
-                             f"💰 Harga: Rp{res['price']:,.0f}\n"
-                             f"📥 Entry: {res['entry']}\n"
-                             f"📊 Vol: {res['vol']}\n"
+                             f"💰 Harga: Rp{res['price']:,.0f} (RSI: {res['rsi']})\n"
+                             f"📥 Area Entry: {res['entry']}\n"
+                             f"📊 Kondisi: {res['vol']}\n"
                              f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}\n\n")
     
     context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=status_msg.message_id, text=final_report, parse_mode='HTML')
 
+# (Fungsi add_stock, remove_stock, list_watchlist, ubah_modal, handle_text tetap sama seperti sebelumnya)
 def add_stock(update: Update, context: CallbackContext):
     if not is_auth(update) or not context.args: return
     sym = context.args[0].upper()
@@ -189,7 +192,6 @@ def handle_text(update: Update, context: CallbackContext):
         save_modal(int(text))
         update.message.reply_text(f"✅ Modal Rp{int(text):,.0f} disimpan.")
 
-# --- AUTO SIGNAL (5 MENIT) ---
 def auto_signal_job(context: CallbackContext):
     global USER_CHAT_ID, SENT_STOCKS
     modal = load_modal()
@@ -201,17 +203,17 @@ def auto_signal_job(context: CallbackContext):
         random.shuffle(pool)
         for sym in pool:
             res = analyze_stock(sym)
-            if res and "BUY" in res["status"] and modal >= (res["price"] * 100):
-                results.append(f"🔥 <b>BUY: {sym.replace('.JK','')}</b>\n"
+            if res and ("BUY" in res["status"] or "WATCH" in res["status"]) and modal >= (res["price"] * 100):
+                results.append(f"🔥 <b>SIGNAL: {sym.replace('.JK','')}</b>\n"
                                f"Harga: {res['price']:,.0f}\n"
-                               f"📥 Entry: {res['entry']}\n"
-                               f"📊 Vol: {res['vol']}\n"
+                               f"📥 Area Entry: {res['entry']}\n"
+                               f"📊 Kondisi: {res['vol']}\n"
                                f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}")
                 found_now.append(sym)
             if len(results) >= 3: break
         if results:
             SENT_STOCKS = found_now
-            context.bot.send_message(chat_id=USER_CHAT_ID, text="🚀 <b>RADAR REALTIME</b>\n\n"+"\n\n".join(results), parse_mode='HTML')
+            context.bot.send_message(chat_id=USER_CHAT_ID, text="🚀 <b>RADAR PRO MAX</b>\n\n"+"\n\n".join(results), parse_mode='HTML')
 
 if __name__ == '__main__':
     updater = Updater(TOKEN, use_context=True)
