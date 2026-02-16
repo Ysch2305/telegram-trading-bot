@@ -90,5 +90,6 @@ if __name__ == '__main__':
     dp.add_handler(CommandHandler("list", list_watchlist))
 
     # clean=True membantu menghapus pesan 'nyangkut' saat bot baru nyala
-    updater.start_polling(clean=True)
+    updater.start_polling(drop_pending_updates=True)
     updater.idle()
+
