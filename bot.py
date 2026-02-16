@@ -15,16 +15,20 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 USER_CHAT_ID = None 
 
-# --- DATABASE LOGIC ---
+# --- DAFTAR RADAR IHSG (Saham untuk Rekomendasi Otomatis) ---
+IHSG_SCAN_LIST = [
+    "ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "GOTO.JK", 
+    "ASSA.JK", "BUMI.JK", "ANTM.JK", "MDKA.JK", "INCO.JK", "PGAS.JK", "UNTR.JK", 
+    "AMRT.JK", "CPIN.JK", "ICBP.JK", "KLBF.JK", "ADRO.JK", "ITMG.JK", "PTBA.JK",
+    "BRIS.JK", "ARTO.JK", "MEDC.JK", "TOWR.JK", "EXCL.JK", "AKRA.JK", "BRPT.JK",
+    "AMMN.JK", "INKP.JK", "TPIA.JK", "MAPA.JK", "ACES.JK", "HRUM.JK"
+]
+
+# --- DATABASE LOGIC (Untuk Watchlist Pribadi) ---
 def init_db():
     conn = sqlite3.connect('watchlist.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS stocks (symbol TEXT PRIMARY KEY)''')
-    c.execute("SELECT count(*) FROM stocks")
-    if c.fetchone()[0] == 0:
-        default_stocks = ["BUMI.JK", "BBCA.JK", "GOTO.JK", "BBRI.JK", "BMRI.JK", "ANTM.JK"]
-        for s in default_stocks:
-            c.execute("INSERT OR IGNORE INTO stocks VALUES (?)", (s,))
     conn.commit()
     conn.close()
 
@@ -103,102 +107,6 @@ def analyze_symbol(sym, df):
     
     return {"status": status, "vol": vol_status, "msg": msg}
 
-# --- AUTO SCAN JOB (POTENSI NAIK) ---
+# --- AUTO SCAN JOB (REKOMENDASI IHSG) ---
 def auto_scan_job(context: CallbackContext):
     global USER_CHAT_ID
-    if USER_CHAT_ID and is_market_open():
-        current_watchlist = get_watchlist()
-        results = []
-        for sym in current_watchlist:
-            try:
-                df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
-                res = analyze_symbol(sym, df)
-                if res:
-                    # Filter untuk Auto-Signal saja
-                    if res["status"] == "BUY 🟢":
-                        results.append(f"🔥 <b>SINYAL MATANG:</b>\n{res['msg']}")
-                    elif res["status"] == "HOLD 🟡" and "Tinggi 📈" in res["vol"]:
-                        results.append(f"👀 <b>POTENSI NAIK (Akumulasi Vol):</b>\n{res['msg']}")
-                    elif res["status"] == "SELL 🔴":
-                        results.append(f"⚠️ <b>SINYAL JUAL:</b>\n{res['msg']}")
-            except: continue
-        
-        if results:
-            full_text = "🔔 <b>AUTO-SIGNAL UPDATE</b>\n\n" + "\n\n".join(results)
-            context.bot.send_message(chat_id=USER_CHAT_ID, text=full_text, parse_mode='HTML')
-
-# --- BOT COMMANDS ---
-def start(update: Update, context: CallbackContext):
-    global USER_CHAT_ID
-    USER_CHAT_ID = update.message.chat_id
-    update.message.reply_text(
-        "🚀 <b>SwingWatchBit Pro Aktif!</b>\n\n"
-        "• <b>Auto-Signal</b>: Aktif tiap 5 menit (Cek Potensi).\n"
-        "• <b>/scan</b>: Analisis semua saham di watchlist.\n"
-        "• <b>/add KODE</b>: Tambah saham baru.\n"
-        "• <b>/remove KODE</b>: Hapus saham.\n"
-        "• <b>/list</b>: Cek isi watchlist.",
-        parse_mode='HTML'
-    )
-
-def scan(update: Update, context: CallbackContext):
-    update.message.reply_text("🔎 Menganalisis seluruh watchlist Anda secara detail...")
-    current_watchlist = get_watchlist()
-    results = []
-    for sym in current_watchlist:
-        try:
-            df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
-            res = analyze_symbol(sym, df)
-            if res: results.append(res["msg"])
-        except: continue
-    if results:
-        update.message.reply_text("\n\n".join(results), parse_mode='HTML')
-    else:
-        update.message.reply_text("Watchlist kosong atau gagal mengambil data.")
-
-def add_stock(update: Update, context: CallbackContext):
-    if not context.args:
-        update.message.reply_text("Gunakan: /add GOTO")
-        return
-    code = context.args[0].upper()
-    if ".JK" not in code: code += ".JK"
-    update.message.reply_text(f"⏳ Memvalidasi {code}...")
-    try:
-        test = yf.download(code, period="1d", progress=False)
-        if test.empty:
-            update.message.reply_text("❌ Kode saham tidak valid.")
-            return
-        add_to_db(code)
-        update.message.reply_text(f"✅ {code} ditambahkan ke database!")
-    except:
-        update.message.reply_text("❌ Terjadi kesalahan.")
-
-def remove_stock(update: Update, context: CallbackContext):
-    if not context.args:
-        update.message.reply_text("Gunakan: /remove GOTO")
-        return
-    code = context.args[0].upper()
-    if ".JK" not in code: code += ".JK"
-    remove_from_db(code)
-    update.message.reply_text(f"🗑 {code} dihapus dari watchlist.")
-
-def list_watchlist(update: Update, context: CallbackContext):
-    current_watchlist = get_watchlist()
-    msg = "📋 <b>Watchlist Anda:</b>\n\n" + "\n".join([f"- {s}" for s in current_watchlist])
-    update.message.reply_text(msg, parse_mode='HTML')
-
-if __name__ == '__main__':
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("scan", scan))
-    dp.add_handler(CommandHandler("add", add_stock))
-    dp.add_handler(CommandHandler("remove", remove_stock))
-    dp.add_handler(CommandHandler("list", list_watchlist))
-
-    scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
-    scheduler.add_job(auto_scan_job, 'interval', minutes=5, args=[updater])
-    scheduler.start()
-
-    updater.start_polling(drop_pending_updates=True)
-    updater.idle()
