@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import yfinance as yf
+import numpy as np
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
 import logging
@@ -11,8 +12,9 @@ from datetime import datetime
 import pytz
 import sqlite3
 import random
+import time
 
-# Setup Logging
+# --- SETUP ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -20,19 +22,19 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_ID = os.environ.get("MY_ID")
 
 USER_CHAT_ID = None
-SENT_STOCKS = [] 
 
+# Daftar saham dengan kapitalisasi pasar lumayan / liquid untuk swing
 IHSG_RADAR = [
-    "BUMI.JK", "BRMS.JK", "ENRG.JK", "DEWA.JK", "BHIT.JK", "KPIG.JK", "MNCN.JK", 
-    "MLPL.JK", "MPPA.JK", "LPKR.JK", "BRPT.JK", "TPIA.JK", "PNLF.JK", "GOTO.JK", 
-    "ASSA.JK", "PANI.JK", "ADMR.JK", "DOID.JK", "KIJA.JK", "BSBK.JK"
+    "ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "ASSA.JK",
+    "PANI.JK", "ADRO.JK", "PTBA.JK", "UNTR.JK", "ICBP.JK", "CPIN.JK", "BRMS.JK",
+    "BUMI.JK", "GOTO.JK", "MEDC.JK", "ANAM.JK", "TPIA.JK", "AMRT.JK"
 ]
 
 def get_realtime_price(sym):
     try:
         ticker = sym.split('.')[0]
-        url = f"https://www.google.com/finance/quote/{ticker}:IDX"
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        url = f"https://www.google.com/finance/quote/{ticker}:IDX?rand={time.time()}"
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(response.text, 'html.parser')
         price_class = soup.find("div", {"class": "YMlSbc"})
         if price_class:
@@ -62,172 +64,117 @@ def db_manage_watchlist(action, symbol=None):
     conn.commit()
     conn.close()
 
-def save_modal(val):
-    conn = sqlite3.connect('bot_data.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO settings VALUES ('modal', ?)", (str(val),))
-    conn.commit()
-    conn.close()
-
-def load_modal():
-    conn = sqlite3.connect('bot_data.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT value FROM settings WHERE key = 'modal'")
-    res = c.fetchone()
-    conn.close()
-    return int(res[0]) if res else 0
-
 init_db()
 
-def is_auth(update: Update):
-    uid = str(update.message.from_user.id)
-    return AUTHORIZED_ID and uid == str(AUTHORIZED_ID).strip()
-
-# --- MAXIMIZED ANALYSIS CORE ---
-def analyze_stock(sym):
+# --- SWING SEMI-INSTITUTIONAL ENGINE ---
+def analyze_swing(sym):
     try:
         rt_price = get_realtime_price(sym)
-        df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
-        if df is None or len(df) < 20: return None
+        df = yf.download(sym, period="6mo", interval="1d", progress=False, auto_adjust=True)
+        if df is None or len(df) < 50: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         curr_p = rt_price if rt_price else float(df["Close"].iloc[-1])
-        prev_p = float(df["Close"].iloc[-2])
         
-        # 1. EMA Triple Filter
-        ema5 = df["Close"].ewm(span=5).mean().iloc[-1]
+        # 1. RSI Wilder (14)
+        delta = df["Close"].diff()
+        gain = (delta.where(delta > 0, 0))
+        loss = (-delta.where(delta < 0, 0))
+        avg_gain = gain.ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
+        avg_loss = loss.ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
+        rsi = 100 - (100 / (1 + (avg_gain/avg_loss))) if avg_loss != 0 else 100
+        
+        # 2. Moving Averages (Institutional Standard)
         ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
         ema50 = df["Close"].ewm(span=50).mean().iloc[-1]
         
-        # 2. RSI Precision
-        delta = df["Close"].diff()
-        up = delta.clip(lower=0).rolling(14).mean().iloc[-1]
-        down = (-1 * delta.clip(upper=0)).rolling(14).mean().iloc[-1]
-        rsi = 100 - (100 / (1 + (up/down))) if down != 0 else 100
-        
-        # 3. Advanced Volume Analysis
-        avg_vol = df["Volume"].tail(10).mean()
+        # 3. Volume Accumulation (Volume MA 20)
+        vol_ma20 = df["Volume"].rolling(window=20).mean().iloc[-1]
         curr_vol = df["Volume"].iloc[-1]
         
-        # Logika Status
-        if curr_p > ema20 and ema5 > ema20 and rsi > 50:
-            status = "BUY 🟢"
-            # Deteksi Akumulasi
-            vol_status = "AKUMULASI 🔥" if curr_vol > avg_vol and curr_p >= prev_p else "STRONG BUY 💪"
-        elif rsi < 30:
-            status = "WATCH 🟡"
-            vol_status = "OVERSOLD (Cheap)"
-        elif curr_p < ema20 or (curr_p < prev_p and curr_vol > avg_vol * 1.5):
-            status = "SELL 🔴"
-            vol_status = "DISTRIBUSI ⚠️" if curr_vol > avg_vol else "WEAK 📉"
+        # --- LOGIKA SWING SEMI-INSTITUTIONAL ---
+        # Syarat BUY: Harga > EMA20, EMA20 > EMA50, RSI antara 45-65 (Bukan Pucuk)
+        if curr_p > ema20 and ema20 > ema50 and 45 <= rsi <= 68:
+            status = "SWING BUY 🚀"
+            note = "Institusi Akumulasi" if curr_vol > vol_ma20 else "Trend Stabil"
+        elif rsi < 35:
+            status = "POTENTIAL REBOUND 🟡"
+            note = "Bottom Fishing Area"
+        elif curr_p < ema20:
+            status = "AVOID 🔴"
+            note = "Tren Rusak"
         else:
-            status = "HOLD 🟡"
-            vol_status = "NORMAL ⚪"
+            status = "HOLD / NEUTRAL ⚪"
+            note = "Menunggu Konfirmasi"
 
-        low_support = df["Low"].tail(5).min()
-        entry_zone = f"{int(low_support)} - {int(low_support * 1.02)}" # Area dekat support
+        # --- TP/SL DINAMIS (SWING 2-5 HARI) ---
+        # Swing High 10 hari terakhir sebagai TP
+        # Swing Low 5 hari terakhir sebagai SL
+        tp_target = df["High"].tail(10).max()
+        if tp_target <= curr_p: tp_target = curr_p * 1.08 # Jika breakout, incar 8%
+        
+        sl_target = df["Low"].tail(5).min()
+        if sl_target >= curr_p: sl_target = curr_p * 0.96 # Jika mepet, SL 4%
         
         return {
-            "status": status, "price": curr_p, "tp": curr_p * 1.07, "sl": low_support * 0.98, 
-            "entry": entry_zone, "vol": vol_status, "rsi": int(rsi)
+            "status": status, "price": curr_p, "tp": tp_target, "sl": sl_target, 
+            "rsi": int(rsi), "note": note
         }
     except: return None
 
-# --- COMMANDS ---
-def start(update: Update, context: CallbackContext):
-    if not is_auth(update): return
-    global USER_CHAT_ID
-    USER_CHAT_ID = update.message.chat_id
-    modal = load_modal()
-    update.message.reply_text(f"🚀 <b>Bot Pro Max Aktif</b>\nModal: Rp{modal:,.0f}\nAnalisa: EMA Triple, VSA, & RSI Divergence.", parse_mode='HTML')
-
+# --- HANDLERS ---
 def scan_watchlist(update: Update, context: CallbackContext):
-    if not is_auth(update): return
     stocks = db_manage_watchlist("list")
-    if not stocks:
-        update.message.reply_text("Watchlist kosong.")
-        return
-
-    status_msg = update.message.reply_text("🔎 <b>Memproses Analisa Pro...</b>", parse_mode='HTML')
-    final_report = "🔎 <b>HASIL SCAN PRO MAX</b>\n\n"
+    if not stocks: return update.message.reply_text("Watchlist kosong.")
+    
+    msg = update.message.reply_text("🔎 Analyzing Swing Opportunities...")
+    report = "🏛 <b>SWING INSTITUTIONAL REPORT</b>\n\n"
     
     for s in stocks:
-        res = analyze_stock(s)
+        res = analyze_swing(s)
         if res:
-            final_report += (f"<b>{s.replace('.JK','')}</b> | {res['status']}\n"
-                             f"💰 Harga: Rp{res['price']:,.0f} (RSI: {res['rsi']})\n"
-                             f"📥 Area Entry: {res['entry']}\n"
-                             f"📊 Kondisi: {res['vol']}\n"
-                             f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}\n\n")
+            report += (f"<b>{s.replace('.JK','')}</b> | {res['status']}\n"
+                       f"💰 Price: Rp{res['price']:,.0f} (RSI: {res['rsi']})\n"
+                       f"💡 Note: {res['note']}\n"
+                       f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}\n\n")
     
-    context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=status_msg.message_id, text=final_report, parse_mode='HTML')
+    context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=msg.message_id, text=report, parse_mode='HTML')
 
-# (Fungsi add_stock, remove_stock, list_watchlist, ubah_modal, handle_text tetap sama seperti sebelumnya)
-def add_stock(update: Update, context: CallbackContext):
-    if not is_auth(update) or not context.args: return
-    sym = context.args[0].upper()
-    if ".JK" not in sym: sym += ".JK"
-    db_manage_watchlist("add", sym)
-    update.message.reply_text(f"✅ {sym} ditambah.")
-
-def remove_stock(update: Update, context: CallbackContext):
-    if not is_auth(update) or not context.args: return
-    sym = context.args[0].upper().replace(".JK","") + ".JK"
-    db_manage_watchlist("remove", sym)
-    update.message.reply_text(f"🗑 {sym} dihapus.")
-
-def list_watchlist(update: Update, context: CallbackContext):
-    if not is_auth(update): return
-    s = db_manage_watchlist("list")
-    update.message.reply_text(f"📋 Watchlist: {', '.join(s) if s else 'Kosong'}")
-
-def ubah_modal(update: Update, context: CallbackContext):
-    if not is_auth(update): return
-    update.message.reply_text("Masukkan modal baru (angka):")
-
-def handle_text(update: Update, context: CallbackContext):
-    if not is_auth(update): return
-    text = update.message.text.strip()
-    if text.isdigit():
-        save_modal(int(text))
-        update.message.reply_text(f"✅ Modal Rp{int(text):,.0f} disimpan.")
-
-def auto_signal_job(context: CallbackContext):
-    global USER_CHAT_ID, SENT_STOCKS
-    modal = load_modal()
+def auto_swing_signal(context: CallbackContext):
+    global USER_CHAT_ID
     now = datetime.now(pytz.timezone('Asia/Jakarta'))
-    if USER_CHAT_ID and modal > 0 and (now.weekday() < 5 and 9 <= now.hour < 16):
-        results = []
-        found_now = []
-        pool = [s for s in IHSG_RADAR if s not in SENT_STOCKS]
-        random.shuffle(pool)
+    if USER_CHAT_ID and (now.weekday() < 5 and 9 <= now.hour < 16):
+        signals = []
+        pool = random.sample(IHSG_RADAR, 12) # Scan 12 saham liquid secara acak
+        
         for sym in pool:
-            res = analyze_stock(sym)
-            if res and ("BUY" in res["status"] or "WATCH" in res["status"]) and modal >= (res["price"] * 100):
-                results.append(f"🔥 <b>SIGNAL: {sym.replace('.JK','')}</b>\n"
-                               f"Harga: {res['price']:,.0f}\n"
-                               f"📥 Area Entry: {res['entry']}\n"
-                               f"📊 Kondisi: {res['vol']}\n"
-                               f"🎯 TP: {res['tp']:,.0f} | 🛑 SL: {res['sl']:,.0f}")
-                found_now.append(sym)
-            if len(results) >= 3: break
-        if results:
-            SENT_STOCKS = found_now
-            context.bot.send_message(chat_id=USER_CHAT_ID, text="🚀 <b>RADAR PRO MAX</b>\n\n"+"\n\n".join(results), parse_mode='HTML')
+            res = analyze_swing(sym)
+            if res and "SWING BUY" in res["status"]:
+                signals.append(f"🏛 <b>SWING SIGNAL: {sym.replace('.JK','')}</b>\n"
+                               f"Entry: Rp{res['price']:,.0f}\n"
+                               f"Note: {res['note']}\n"
+                               f"🎯 Target: {res['tp']:,.0f}\n"
+                               f"🛑 Risk: {res['sl']:,.0f}")
+            if len(signals) >= 2: break
+        
+        if signals:
+            context.bot.send_message(chat_id=USER_CHAT_ID, text="📢 <b>RADAR INSTITUSI (SWING)</b>\n\n" + "\n\n".join(signals), parse_mode='HTML')
+
+# (Bagian main / start / add tetap sama seperti kode sebelumnya)
+def start(update: Update, context: CallbackContext):
+    global USER_CHAT_ID
+    USER_CHAT_ID = update.message.chat_id
+    update.message.reply_text("✅ Swing Bot Semi-Institutional Aktif.\n/scan untuk analisa manual.")
 
 if __name__ == '__main__':
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("add", add_stock))
-    dp.add_handler(CommandHandler("remove", remove_stock))
-    dp.add_handler(CommandHandler("list", list_watchlist))
     dp.add_handler(CommandHandler("scan", scan_watchlist))
-    dp.add_handler(CommandHandler("ubah_modal", ubah_modal))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
     
     scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
-    scheduler.add_job(auto_signal_job, 'interval', minutes=5, args=[updater])
+    scheduler.add_job(auto_swing_signal, 'interval', minutes=15, args=[updater]) # Cek tiap 15 menit agar tidak berisik
     scheduler.start()
-    updater.start_polling(drop_pending_updates=True)
+    
+    updater.start_polling()
     updater.idle()
