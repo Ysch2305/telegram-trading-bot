@@ -20,15 +20,16 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_ID = os.environ.get("MY_ID")
-USER_CHAT_ID = None  # Akan terisi otomatis saat Anda klik /start
+USER_CHAT_ID = None 
 
+# Daftar Radar Lebih Luas agar Saham Variatif
 IHSG_RADAR = [
     "ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "ASSA.JK",
     "PANI.JK", "ADRO.JK", "PTBA.JK", "UNTR.JK", "ICBP.JK", "CPIN.JK", "BRMS.JK",
-    "BUMI.JK", "GOTO.JK", "MEDC.JK", "TPIA.JK", "AMRT.JK", "PGAS.JK", "ADMR.JK"
+    "BUMI.JK", "GOTO.JK", "MEDC.JK", "TPIA.JK", "AMRT.JK", "PGAS.JK", "ADMR.JK",
+    "ANTM.JK", "HRUM.JK", "MDKA.JK", "ITMG.JK", "AKRA.JK", "TINS.JK", "LSIP.JK"
 ]
 
-# --- 2. ENGINE HARGA REALTIME ---
 def get_realtime_price(sym):
     try:
         ticker = sym.split('.')[0]
@@ -39,10 +40,9 @@ def get_realtime_price(sym):
         if price_class:
             return float(price_class.text.replace('IDR', '').replace(',', '').strip())
         return None
-    except:
-        return None
+    except: return None
 
-# --- 3. DATABASE ---
+# --- 2. DATABASE ---
 def init_db():
     with sqlite3.connect('bot_data.db', check_same_thread=False) as conn:
         c = conn.cursor()
@@ -62,8 +62,36 @@ def db_manage_watchlist(action, symbol=None):
             c.execute("SELECT symbol FROM watchlist")
             return [r[0] for r in c.fetchall()]
 
-# --- 4. ANALISA VOLUME SPIKE ---
-def analyze_stock(sym):
+# --- 3. ANALISA KHUSUS SCALPING (AUTO SIGNAL) ---
+def analyze_scalping(sym):
+    try:
+        df = yf.download(sym, period="1d", interval="1m", progress=False, auto_adjust=True) # Data 1 Menit
+        if df is None or len(df) < 20: return None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        curr_p = float(df["Close"].iloc[-1])
+        prev_p = float(df["Close"].iloc[-2])
+        
+        # 1. Deteksi Ledakan Volume (VSA)
+        avg_vol = df["Volume"].tail(10).mean()
+        curr_vol = df["Volume"].iloc[-1]
+        
+        # 2. Deteksi Breakout High (Momentum)
+        high_5m = df["High"].tail(5).max()
+        
+        # Logika Scalping: Volume Meledak + Harga Tembus High Terakhir
+        if curr_vol > (avg_vol * 2.5) and curr_p >= high_5m:
+            return {
+                "type": "SCALPING 🔥",
+                "price": curr_p,
+                "target": curr_p * 1.02, # Target 2% saja
+                "stop": curr_p * 0.985   # Stop loss ketat 1.5%
+            }
+        return None
+    except: return None
+
+# --- 4. ANALISA KHUSUS SWING (SCAN MANUAL) ---
+def analyze_swing(sym):
     try:
         rt_price = get_realtime_price(sym)
         df = yf.download(sym, period="1mo", interval="5m", progress=False, auto_adjust=True)
@@ -71,95 +99,81 @@ def analyze_stock(sym):
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         curr_p = rt_price if rt_price else float(df["Close"].iloc[-1])
-        avg_vol = df["Volume"].rolling(window=20).mean().iloc[-1]
-        curr_vol = df["Volume"].iloc[-1]
-        vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
-        
         ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
-        ema50 = df["Close"].ewm(span=50).mean().iloc[-1]
         
-        delta = df["Close"].diff()
-        gain = delta.where(delta > 0, 0).ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
-        loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
-        rsi = 100 - (100 / (1 + (gain/loss))) if loss != 0 else 100
-        
-        is_spike = vol_ratio >= 2.0
-        if is_spike and curr_p > ema20:
-            status, pesan = "ADA BANDAR MASUK 🔥", f"Volume meledak {vol_ratio:.1f}x lipat!"
-        elif curr_p > ema20 and ema20 > ema50 and 45 <= rsi <= 70:
-            status, pesan = "SAATNYA BELI ✅", "Tren naik bagus, Bos."
-        elif rsi < 35:
-            status, pesan = "SUDAH KEMURAHAN 📉", "Harga lecek, potensi mantul."
-        elif curr_p < ema20:
-            status, pesan = "JANGAN SENTUH 🚫", "Lagi loyo, tren rusak."
-        else:
-            status, pesan = "DISKON SEHAT 🛍️", "Harga istirahat sebentar."
-
+        # Area Antri Support
         low_support = df["Low"].tail(100).min()
-        entry_zone = f"{int(low_support)} - {int(low_support * 1.02)}"
-        tp = df["High"].tail(100).max()
-        if tp <= curr_p: tp = curr_p * 1.08
-        sl = low_support * 0.98
+        
+        status = "SAATNYA BELI ✅" if curr_p > ema20 else "DISKON SEHAT 🛍️"
+        if curr_p < ema20 * 0.98: status = "JANGAN SENTUH 🚫"
 
-        return {"status": status, "pesan": pesan, "price": curr_p, "tp": tp, "sl": sl, "entry": entry_zone}
+        return {
+            "status": status,
+            "price": curr_p,
+            "entry": f"{int(low_support)} - {int(low_support * 1.02)}",
+            "tp": curr_p * 1.07,
+            "sl": low_support * 0.97
+        }
     except: return None
 
-# --- 5. FITUR AUTO SIGNAL (DETEKSI OTOMATIS) ---
+# --- 5. JOB AUTO SIGNAL (TIAP 5 MENIT) ---
 def auto_signal_job(context: CallbackContext):
     global USER_CHAT_ID
     if not USER_CHAT_ID: return
     
-    # Cek jam market (Senin-Jumat, 09:00 - 16:00 WIB)
     now = datetime.now(pytz.timezone('Asia/Jakarta'))
     if now.weekday() < 5 and 9 <= now.hour < 16:
-        # Kocok daftar radar agar saham tidak itu-itu saja
-        pool = random.sample(IHSG_RADAR, 7) 
+        # Acak 10 saham dari radar agar tidak bosan
+        pool = random.sample(IHSG_RADAR, 10)
         for sym in pool:
-            res = analyze_stock(sym)
-            # Kirim hanya jika ada Bandar Masuk atau Sinyal Beli
-            if res and (res["status"] == "ADA BANDAR MASUK 🔥" or res["status"] == "SAATNYA BELI ✅"):
-                msg = (f"📢 **AUTO SIGNAL DETECTED**\n\n"
-                       f"**{sym.replace('.JK','')}** | {res['status']}\n"
-                       f"💰 Harga: Rp{res['price']:,.0f}\n"
-                       f"📥 Area Antri: {res['entry']}\n"
-                       f"🎯 Jual di: {res['tp']:,.0f}")
-                context.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode='HTML')
-                break # Kirim satu per satu agar tidak spam
+            res = analyze_scalping(sym)
+            if res:
+                msg = (f"⚡️ **SCALPING SIGNAL (1M/5M)**\n\n"
+                       f"🚀 **{sym.replace('.JK','')}**\n"
+                       f"💰 Masuk: {res['price']:,.0f}\n"
+                       f"🎯 Bungkus (2%): {res['target']:,.0f}\n"
+                       f"🛑 Keluar (1.5%): {res['stop']:,.0f}\n\n"
+                       f"*Sinyal berdasarkan ledakan volume realtime!*")
+                context.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode='Markdown')
+                time.sleep(1) # Jeda agar tidak dianggap spam
 
-# --- 6. HANDLERS ---
+# --- 6. COMMAND HANDLERS ---
 def start(update: Update, context: CallbackContext):
     global USER_CHAT_ID
     USER_CHAT_ID = update.message.chat_id
     init_db()
-    update.message.reply_text("🏛 **Bot Pro Aktif!**\nAuto Signal Jalan tiap 10 menit saat market buka.")
+    update.message.reply_text("🏛 **Bot Dua Mode Aktif!**\n\n1. **Auto Signal (5m)**: Khusus Scalping (Otomatis).\n2. **Scan Manual**: Khusus Swing (Ketik /scan).")
 
-def scan_watchlist(update: Update, context: CallbackContext):
+def scan_manual(update: Update, context: CallbackContext):
     stocks = db_manage_watchlist("list")
-    if not stocks: return update.message.reply_text("Daftar pantauan kosong.")
-    msg = update.message.reply_text("🔎 **Mendeteksi pergerakan market...**")
-    report = "🏛 **HASIL ANALISA REALTIME**\n\n"
+    if not stocks: return update.message.reply_text("Watchlist kosong.")
+    
+    msg = update.message.reply_text("🔎 **Menganalisa tren Swing...**")
+    report = "🏛 **SWING ANALYSIS REPORT**\n\n"
+    
     for s in stocks:
-        res = analyze_stock(s)
+        res = analyze_swing(s)
         if res:
             report += (f"**{s.replace('.JK','')}** | {res['status']}\n"
-                       f"💰 Harga: Rp{res['price']:,.0f}\n"
-                       f"📥 Area Antri: {res['entry']}\n\n")
+                       f"💰 Harga: {res['price']:,.0f}\n"
+                       f"📥 Area Antri: {res['entry']}\n"
+                       f"🎯 Target Jual: {res['tp']:,.0f}\n\n")
     context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=msg.message_id, text=report, parse_mode='HTML')
 
-# --- 7. RUNNER ---
+# --- 7. MAIN ---
 if __name__ == '__main__':
     init_db()
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
     
-    # Jadwalkan Auto Signal
+    # Scheduler untuk Scalping 5 Menit
     scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
-    scheduler.add_job(auto_signal_job, 'interval', minutes=10, args=[updater])
+    scheduler.add_job(auto_signal_job, 'interval', minutes=5, args=[updater])
     scheduler.start()
     
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("add", lambda u, c: u.message.reply_text(f"✅ {db_manage_watchlist('add', c.args[0])} masuk!") if c.args else None))
-    dp.add_handler(CommandHandler("scan", scan_watchlist))
+    dp.add_handler(CommandHandler("scan", scan_manual))
     
     updater.start_polling()
     updater.idle()
