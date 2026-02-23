@@ -24,7 +24,7 @@ AUTHORIZED_ID = os.environ.get("MY_ID")
 IHSG_RADAR = [
     "ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "ASSA.JK",
     "PANI.JK", "ADRO.JK", "PTBA.JK", "UNTR.JK", "ICBP.JK", "CPIN.JK", "BRMS.JK",
-    "BUMI.JK", "GOTO.JK", "MEDC.JK", "TPIA.JK", "AMRT.JK", "PGAS.JK"
+    "BUMI.JK", "GOTO.JK", "MEDC.JK", "TPIA.JK", "AMRT.JK", "PGAS.JK", "ADMR.JK"
 ]
 
 def get_realtime_price(sym):
@@ -65,96 +65,80 @@ def db_manage_watchlist(action, symbol=None):
             c.execute("SELECT symbol FROM watchlist")
             return [r[0] for r in c.fetchall()]
 
-# --- 3. ANALISA (PENGGUNAAN BAHASA MUDAH) ---
+# --- 3. ANALISA VOLUME SPIKE & TREND ---
 def analyze_stock(sym):
     try:
         rt_price = get_realtime_price(sym)
-        # Interval 5 Menit agar lincah
+        # Ambil data 5 menit untuk presisi hari ini
         df = yf.download(sym, period="1mo", interval="5m", progress=False, auto_adjust=True)
         if df is None or len(df) < 50: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         curr_p = rt_price if rt_price else float(df["Close"].iloc[-1])
         
-        # Indikator Dasar
+        # 1. Volume Spike Analysis
+        # Bandingkan volume saat ini dengan rata-rata volume 20 periode terakhir
+        avg_vol = df["Volume"].rolling(window=20).mean().iloc[-1]
+        curr_vol = df["Volume"].iloc[-1]
+        vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
+        
+        # 2. Trend Indicators
         ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
         ema50 = df["Close"].ewm(span=50).mean().iloc[-1]
         
+        # 3. RSI Wilder
         delta = df["Close"].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
-        avg_loss = loss.ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
-        rsi = 100 - (100 / (1 + (avg_gain/avg_loss))) if avg_loss != 0 else 100
+        gain = delta.where(delta > 0, 0).ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
+        loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
+        rsi = 100 - (100 / (1 + (gain/loss))) if loss != 0 else 100
         
-        # --- LOGIKA STATUS BAHASA SANTAI ---
-        if curr_p > ema20 and ema20 > ema50 and 45 <= rsi <= 70:
+        # --- LOGIKA STATUS ---
+        status = ""
+        pesan = ""
+        
+        # Kondisi Volume Meledak (Spike)
+        is_spike = vol_ratio >= 2.0  # Volume 2x lipat lebih besar dari biasanya
+        
+        if is_spike and curr_p > ema20:
+            status = "ADA BANDAR MASUK 🔥"
+            pesan = f"Volume meledak {vol_ratio:.1f}x lipat! Uang besar masuk."
+        elif curr_p > ema20 and ema20 > ema50 and 45 <= rsi <= 70:
             status = "SAATNYA BELI ✅"
-            pesan = "Bos-bos lagi borong barang."
+            pesan = "Tren naik stabil, Bos-bos lagi borong."
         elif rsi < 35:
             status = "SUDAH KEMURAHAN 📉"
-            pesan = "Harganya lecek, siap-siap mantul."
+            pesan = "Harga lecek, potensi mantul balik."
         elif curr_p < ema20:
             status = "JANGAN SENTUH 🚫"
-            pesan = "Lagi loyo, mending jauhin dulu."
+            pesan = "Lagi dibuang pasar, tren lagi rusak."
         else:
             status = "DISKON SEHAT 🛍️"
-            pesan = "Harga lagi istirahat, pantau dulu."
+            pesan = "Harga istirahat sejenak, pantau area antri."
 
-        # Area Entry (Lantai Support)
+        # Area Antri & Target
         low_support = df["Low"].tail(100).min()
         entry_zone = f"{int(low_support)} - {int(low_support * 1.02)}"
-        
-        # Target Profit & Batas Rugi
         tp = df["High"].tail(100).max()
-        if tp <= curr_p: tp = curr_p * 1.07
+        if tp <= curr_p: tp = curr_p * 1.08
         sl = low_support * 0.98
 
         return {
             "status": status, "pesan": pesan, "price": curr_p, 
-            "tp": tp, "sl": sl, "entry": entry_zone, "rsi": int(rsi)
+            "tp": tp, "sl": sl, "entry": entry_zone, "rsi": int(rsi), "spike": is_spike
         }
     except: return None
 
-# --- 4. COMMANDS ---
+# --- 4. TELEGRAM COMMANDS ---
 def start(update: Update, context: CallbackContext):
     init_db()
-    update.message.reply_text("🏛 **Bot Saham Gampang Aktif!**\n\n- `/add <kode>` : Masukin saham ke pantauan\n- `/scan` : Cek saham yang ada di pantauan\n- `/list` : Liat daftar saham Anda")
-
-def add_stock(update: Update, context: CallbackContext):
-    if not context.args: return
-    ticker = context.args[0]
-    res = db_manage_watchlist("add", ticker)
-    update.message.reply_text(f"✅ {res} udah masuk daftar pantau ya!")
+    update.message.reply_text("🏛 **Bot Swing Pro Aktif!**\n\nAnalisa sekarang pakai **Volume Spike** (Deteksi Bandar).")
 
 def scan_watchlist(update: Update, context: CallbackContext):
     stocks = db_manage_watchlist("list")
-    if not stocks: return update.message.reply_text("Daftar pantauan masih kosong, Bos.")
+    if not stocks: return update.message.reply_text("Daftar pantauan kosong.")
     
-    msg = update.message.reply_text("🔎 **Lagi cek harga sebentar...**")
-    report = "🏛 **HASIL CEK SAHAM**\n\n"
+    msg = update.message.reply_text("🔎 **Mendeteksi pergerakan bandar...**")
+    report = "🏛 **HASIL ANALISA REALTIME**\n\n"
     
     for s in stocks:
-        res = analyze_stock(s)
-        if res:
-            report += (f"**{s.replace('.JK','')}** | {res['status']}\n"
-                       f"💡 {res['pesan']}\n"
-                       f"💰 Harga: Rp{res['price']:,.0f} (RSI: {res['rsi']})\n"
-                       f"📥 Area Antri: {res['entry']}\n"
-                       f"🎯 Jual di: {res['tp']:,.0f} | 🛑 Cut Loss: {res['sl']:,.0f}\n\n")
-    
-    context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=msg.message_id, text=report, parse_mode='HTML')
-
-# --- 5. RUNNER ---
-if __name__ == '__main__':
-    init_db()
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("add", add_stock))
-    dp.add_handler(CommandHandler("scan", scan_watchlist))
-    dp.add_handler(CommandHandler("list", lambda u, c: u.message.reply_text(f"📋 Daftar Pantau: {', '.join(db_manage_watchlist('list'))}")))
-    dp.add_handler(CommandHandler("remove", lambda u, c: u.message.reply_text(f"🗑 {db_manage_watchlist('remove', c.args[0])} dihapus.")))
-    
-    updater.start_polling()
-    updater.idle()
+        res =
