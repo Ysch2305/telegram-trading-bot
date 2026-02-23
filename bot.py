@@ -69,76 +69,48 @@ def db_manage_watchlist(action, symbol=None):
 def analyze_stock(sym):
     try:
         rt_price = get_realtime_price(sym)
-        # Ambil data 5 menit untuk presisi hari ini
         df = yf.download(sym, period="1mo", interval="5m", progress=False, auto_adjust=True)
         if df is None or len(df) < 50: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         curr_p = rt_price if rt_price else float(df["Close"].iloc[-1])
         
-        # 1. Volume Spike Analysis
-        # Bandingkan volume saat ini dengan rata-rata volume 20 periode terakhir
+        # Volume Spike Analysis
         avg_vol = df["Volume"].rolling(window=20).mean().iloc[-1]
         curr_vol = df["Volume"].iloc[-1]
         vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
         
-        # 2. Trend Indicators
+        # Trend
         ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
         ema50 = df["Close"].ewm(span=50).mean().iloc[-1]
         
-        # 3. RSI Wilder
+        # RSI
         delta = df["Close"].diff()
         gain = delta.where(delta > 0, 0).ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
         loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, min_periods=14).mean().iloc[-1]
         rsi = 100 - (100 / (1 + (gain/loss))) if loss != 0 else 100
         
-        # --- LOGIKA STATUS ---
         status = ""
         pesan = ""
-        
-        # Kondisi Volume Meledak (Spike)
-        is_spike = vol_ratio >= 2.0  # Volume 2x lipat lebih besar dari biasanya
+        is_spike = vol_ratio >= 2.0 
         
         if is_spike and curr_p > ema20:
             status = "ADA BANDAR MASUK 🔥"
-            pesan = f"Volume meledak {vol_ratio:.1f}x lipat! Uang besar masuk."
+            pesan = f"Volume meledak {vol_ratio:.1f}x lipat!"
         elif curr_p > ema20 and ema20 > ema50 and 45 <= rsi <= 70:
             status = "SAATNYA BELI ✅"
-            pesan = "Tren naik stabil, Bos-bos lagi borong."
+            pesan = "Tren naik stabil, Bos."
         elif rsi < 35:
             status = "SUDAH KEMURAHAN 📉"
-            pesan = "Harga lecek, potensi mantul balik."
+            pesan = "Harga lecek, potensi mantul."
         elif curr_p < ema20:
             status = "JANGAN SENTUH 🚫"
-            pesan = "Lagi dibuang pasar, tren lagi rusak."
+            pesan = "Lagi loyo, tren rusak."
         else:
             status = "DISKON SEHAT 🛍️"
-            pesan = "Harga istirahat sejenak, pantau area antri."
+            pesan = "Harga istirahat sejenak."
 
-        # Area Antri & Target
         low_support = df["Low"].tail(100).min()
         entry_zone = f"{int(low_support)} - {int(low_support * 1.02)}"
         tp = df["High"].tail(100).max()
-        if tp <= curr_p: tp = curr_p * 1.08
-        sl = low_support * 0.98
-
-        return {
-            "status": status, "pesan": pesan, "price": curr_p, 
-            "tp": tp, "sl": sl, "entry": entry_zone, "rsi": int(rsi), "spike": is_spike
-        }
-    except: return None
-
-# --- 4. TELEGRAM COMMANDS ---
-def start(update: Update, context: CallbackContext):
-    init_db()
-    update.message.reply_text("🏛 **Bot Swing Pro Aktif!**\n\nAnalisa sekarang pakai **Volume Spike** (Deteksi Bandar).")
-
-def scan_watchlist(update: Update, context: CallbackContext):
-    stocks = db_manage_watchlist("list")
-    if not stocks: return update.message.reply_text("Daftar pantauan kosong.")
-    
-    msg = update.message.reply_text("🔎 **Mendeteksi pergerakan bandar...**")
-    report = "🏛 **HASIL ANALISA REALTIME**\n\n"
-    
-    for s in stocks:
-        res =
+        if tp <= curr
