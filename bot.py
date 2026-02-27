@@ -14,24 +14,27 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import pytz
 
-# --- 1. SETUP & AUTH ---
+# --- 1. SETUP ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Mengambil variabel dari Railway
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 USER_CHAT_ID = None 
 
-# Inisialisasi Gemini AI jika Key ada
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+# Inisialisasi Gemini AI dengan Error Handling lebih kuat
+try:
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        ai_model = genai.GenerativeModel('gemini-1.5-flash')
+        logger.info("Gemini AI Berhasil Dikonfigurasi")
+    else:
+        logger.warning("GEMINI_API_KEY tidak ditemukan")
+except Exception as e:
+    logger.error(f"Gagal Inisialisasi Gemini: {e}")
 
-# Daftar Radar IDX
-IHSG_RADAR = [
-    "ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "BRMS.JK", 
-    "BUMI.JK", "GOTO.JK", "ANTM.JK", "MEDC.JK", "ADRO.JK", "PTBA.JK", "PANI.JK"
-]
+IHSG_RADAR = ["ASII.JK", "BBCA.JK", "BBNI.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "BRMS.JK", "BUMI.JK", "ANTM.JK", "PANI.JK"]
 
 # --- 2. DATABASE ---
 def init_db():
@@ -51,72 +54,51 @@ def db_manage_watchlist(action, symbol=None):
         elif action == "list":
             c.execute("SELECT symbol FROM watchlist")
             return [r[0] for r in c.fetchall()]
-        elif action == "remove" and symbol:
-            sym = symbol.upper().replace(".JK", "") + ".JK"
-            c.execute("DELETE FROM watchlist WHERE symbol = ?", (sym,))
-            conn.commit()
-            return sym
 
-# --- 3. CORE ANALYZER (SWING & SCALPING) ---
-def get_technical_data(sym, interval="5m"):
+# --- 3. ANALYZER ---
+def get_technical_data(sym):
     try:
-        df = yf.download(sym, period="1mo", interval=interval, progress=False, auto_adjust=True)
-        if df is None or len(df) < 50: return None
+        # Menggunakan data 1 jam terakhir untuk akurasi saat market tutup
+        df = yf.download(sym, period="5d", interval="15m", progress=False, auto_adjust=True)
+        if df is None or len(df) < 20: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # Harga & EMA
         curr_p = float(df["Close"].iloc[-1])
         ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
         
-        # MACD
-        exp1 = df["Close"].ewm(span=12, adjust=False).mean()
-        exp2 = df["Close"].ewm(span=26, adjust=False).mean()
-        macd = exp1 - exp2
-        signal_line = macd.ewm(span=9, adjust=False).mean()
+        status = "SAATNYA BELI ✅" if curr_p >= ema20 else "JANGAN SENTUH 🚫"
+        if curr_p < ema20 * 0.99: status = "DISKON SEHAT 🛍️"
         
-        # Volume Spike
-        avg_vol = df["Volume"].tail(20).mean()
-        curr_vol = df["Volume"].iloc[-1]
-        vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
-        
-        status = "SAATNYA BELI ✅" if curr_p > ema20 else "JANGAN SENTUH 🚫"
-        low_support = df["Low"].tail(50).min()
-        
-        return {
-            "price": curr_p, "status": status, "macd": macd.iloc[-1], 
-            "signal": signal_line.iloc[-1], "ema20": ema20, "vol_ratio": vol_ratio,
-            "entry": f"{int(low_support)} - {int(low_support * 1.02)}",
-            "tp": curr_p * 1.07, "sl": low_support * 0.97
-        }
-    except Exception as e:
-        logger.error(f"Error data {sym}: {e}")
-        return None
+        low_s = df["Low"].tail(30).min()
+        return {"price": curr_p, "status": status, "entry": f"{int(low_s)} - {int(low_s * 1.02)}"}
+    except: return None
 
-# --- 4. FEATURE: /TANYA AI MENTOR ---
+# --- 4. FITUR /TANYA AI (PERBAIKAN) ---
 def tanya_ai(update: Update, context: CallbackContext):
     if not GEMINI_API_KEY:
-        return update.message.reply_text("❌ GEMINI_API_KEY belum di-set di Railway Variables.")
+        return update.message.reply_text("❌ Variabel GEMINI_API_KEY belum ada di Railway.")
     
-    if not context.args:
-        return update.message.reply_text("Contoh: `/tanya kenapa BUMI jangan sentuh?`")
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        return update.message.reply_text("Contoh: `/tanya prospek saham BUMI`")
 
-    query = " ".join(context.args)
-    ticker = context.args[0].upper().replace("?", "").replace(".JK", "") + ".JK"
+    thinking = update.message.reply_text("🔎 **AI sedang memproses jawaban...**")
     
-    thinking = update.message.reply_text("🤔 **AI Mentor sedang menganalisa...**")
-    
-    # Ambil data teknis asli sebagai bahan AI
-    data = get_technical_data(ticker)
-    
+    # Deteksi ticker saham dalam pertanyaan
+    ticker_info = ""
+    for word in query.upper().split():
+        if len(word) >= 4:
+            data = get_technical_data(word + ".JK")
+            if data:
+                ticker_info = f"Data Teknis {word}: Harga {data['price']}, Status {data['status']}."
+                break
+
     prompt = f"""
-    Kamu adalah asisten ahli saham Indonesia. User bertanya: '{query}'
-    Data Teknis {ticker}: 
-    Harga Sekarang: {data['price'] if data else 'N/A'}, 
-    Status Bot: {data['status'] if data else 'N/A'},
-    MACD: {data['macd'] if data else 'N/A'}.
-
-    Jelaskan kepada user kenapa statusnya demikian. Gunakan bahasa gaul ritel saham Indonesia (santai, tidak kaku). 
-    Berikan edukasi kenapa harga tersebut layak dibeli atau harus dihindari.
+    Kamu adalah asisten trading saham profesional Indonesia.
+    User bertanya: '{query}'
+    {ticker_info}
+    Jelaskan dengan gaya bahasa santai, mudah dimengerti ritel, dan berikan alasan logis.
+    Jika pasar tutup, jelaskan bahwa data mungkin stagnan.
     """
 
     try:
@@ -128,39 +110,37 @@ def tanya_ai(update: Update, context: CallbackContext):
             parse_mode='Markdown'
         )
     except Exception as e:
-        logger.error(f"Gemini Error: {e}")
-        context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=thinking.message_id, text=f"❌ AI lagi pusing: {e}")
+        logger.error(f"Error Gemini: {e}")
+        context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=thinking.message_id, text=f"❌ AI Error: {str(e)[:100]}")
 
-# --- 5. AUTOMATION & SCAN ---
+# --- 5. AUTOMATION ---
 def auto_signal_job(context: CallbackContext):
-    global USER_CHAT_ID
     if not USER_CHAT_ID: return
-    
     now = datetime.now(pytz.timezone('Asia/Jakarta'))
-    # Market Buka Senin-Jumat jam 9-4 sore
+    # Hanya kirim sinyal Senin-Jumat jam 09:00 - 16:00
     if now.weekday() < 5 and 9 <= now.hour < 16:
         sym = random.choice(IHSG_RADAR)
-        res = get_technical_data(sym, interval="1m") # Pakai 1m untuk Scalping
-        
-        # Syarat Scalping: MACD Golden Cross + Volume Meledak
-        if res and res["vol_ratio"] > 2.0 and res["macd"] > res["signal"]:
-            msg = (f"⚡️ **SCALPING ALERT**\n🚀 **{sym.replace('.JK','')}**\n"
-                   f"💰 Harga: {res['price']:,.0f}\n📊 Vol Spike: {res['vol_ratio']:.1f}x\n"
-                   f"🎯 Target Copet: {res['price']*1.02:,.0f}")
+        res = get_technical_data(sym)
+        if res and res["status"] == "SAATNYA BELI ✅":
+            msg = f"⚡️ **AUTO SIGNAL**\n🚀 **{sym.replace('.JK','')}**\n💰 Harga: {res['price']:,.0f}\n📥 Entry: {res['entry']}"
             context.bot.send_message(chat_id=USER_CHAT_ID, text=msg)
 
 def scan_manual(update: Update, context: CallbackContext):
     stocks = db_manage_watchlist("list")
-    if not stocks: return update.message.reply_text("Watchlist kosong. Pakai `/add <kode>`")
-    
+    if not stocks: return update.message.reply_text("Watchlist kosong.")
     report = "🏛 **SWING REPORT**\n\n"
     for s in stocks:
         res = get_technical_data(s)
-        if res:
-            report += f"**{s.replace('.JK','')}** | {res['status']}\n💰 Rp{res['price']:,.0f}\n📥 Entry: {res['entry']}\n\n"
-    update.message.reply_text(report, parse_mode='HTML')
+        if res: report += f"**{s.replace('.JK','')}** | {res['status']}\n💰 {res['price']:,.0f}\n\n"
+    update.message.reply_text(report)
 
-# --- 6. MAIN ---
+# --- 6. RUNNER ---
+def start(update: Update, context: CallbackContext):
+    global USER_CHAT_ID
+    USER_CHAT_ID = update.message.chat_id
+    init_db()
+    update.message.reply_text("🏛 **Bot Siap!**\n\n- `/scan` : Pantau Watchlist\n- `/tanya <hal>` : Tanya AI\n- Auto Signal aktif tiap 5 menit (saat market buka).")
+
 if __name__ == '__main__':
     init_db()
     updater = Updater(TOKEN, use_context=True)
@@ -168,3 +148,12 @@ if __name__ == '__main__':
     
     scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
     scheduler.add_job(auto_signal_job, 'interval', minutes=5, args=[updater])
+    scheduler.start()
+    
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("add", lambda u, c: u.message.reply_text(f"✅ {db_manage_watchlist('add', c.args[0])} OK") if c.args else None))
+    dp.add_handler(CommandHandler("scan", scan_manual))
+    dp.add_handler(CommandHandler("tanya", tanya_ai))
+    
+    updater.start_polling()
+    updater.idle()
