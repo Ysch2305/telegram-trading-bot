@@ -6,35 +6,37 @@ import numpy as np
 from threading import Thread
 from flask import Flask
 
-# --- WEB SERVER UNTUK RAILWAY ---
+# --- INSTITUTIONAL HEALTH CHECK SERVER ---
 app = Flask('')
 @app.route('/')
-def home(): return "Sistem WMI Aktif"
+def home(): return "WMI TRADING TERMINAL: ONLINE"
 
-def run():
+def run_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- KONFIGURASI BOT ---
+# --- BOT CONFIGURATION ---
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# FUNGSI ANALISA (RUMUS MANUAL AGAR TIDAK ERROR)
-def hitung_sinyal(ticker):
+# --- CORE ANALYTICS ENGINE (PROPRIETARY FORMULA) ---
+def get_institutional_analysis(ticker):
+    # Mengambil data historis 1 tahun untuk akurasi tren
     df = yf.download(ticker, period="1y", interval="1d")
     if df.empty or len(df) < 50: return None
     
-    # Indikator EMA
+    # Perhitungan EMA (Exponential Moving Average) Manual
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
     
-    # Indikator RSI
+    # Perhitungan RSI (Relative Strength Index) Manual
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
     
-    # Indikator ATR
+    # Perhitungan ATR (Average True Range) untuk Risk Management
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
@@ -43,44 +45,72 @@ def hitung_sinyal(ticker):
     curr = df.iloc[-1]
     prev = df.iloc[-2]
     
-    status = "WAIT"
+    # DECISION LOGIC
+    signal = "NEUTRAL / SIDEWAYS"
+    action = "WAIT"
+    
+    # Sinyal Beli: Golden Cross + RSI < 65 (Belum Jenuh Beli)
     if curr['EMA20'] > curr['EMA50'] and prev['EMA20'] <= prev['EMA50']:
-        status = "🚀 BUY (GOLDEN CROSS)"
+        signal = "🚀 STRONG BUY (GOLDEN CROSS)"
+        action = "ENTRY"
     elif curr['EMA20'] > curr['EMA50'] and curr['RSI'] < 60:
-        status = "✅ HOLD"
+        signal = "✅ BULLISH TREND (MAINTAIN)"
+        action = "HOLD"
     elif curr['RSI'] > 75:
-        status = "⚠️ TAKE PROFIT"
-        
+        signal = "⚠️ OVERBOUGHT (DANGER ZONE)"
+        action = "TAKE PROFIT"
+    elif curr['EMA20'] < curr['EMA50']:
+        signal = "🔻 BEARISH TREND"
+        action = "STAY OUT"
+
     return {
         "price": curr['Close'],
-        "status": status,
-        "sl": curr['Close'] - (2 * curr['ATR'])
+        "rsi": curr['RSI'],
+        "signal": signal,
+        "action": action,
+        "sl": curr['Close'] - (2 * curr['ATR']) # Stop Loss Institusi
     }
 
+# --- TELEGRAM HANDLERS ---
 @bot.message_handler(commands=['start'])
-def welcome(message):
-    bot.reply_to(message, "🏦 *WMI Trading System Active*\n\nKetik `/cek BBCA.JK` untuk analisa saham.")
+def start_terminal(message):
+    welcome = (
+        "🏦 *WMI TRADING TERMINAL ACTIVE*\n"
+        "Sistem siap mengeksekusi perintah analisis.\n\n"
+        "Gunakan: `/cek [TICKER].JK`"
+    )
+    bot.reply_to(message, welcome, parse_mode="Markdown")
 
 @bot.message_handler(commands=['cek'])
-def check_stock(message):
+def check_ticker(message):
     try:
         ticker = message.text.split()[1].upper()
-        bot.send_message(message.chat.id, f"🔍 Menganalisa {ticker}...")
-        res = hitung_sinyal(ticker)
+        if not ticker.endswith('.JK'):
+            bot.reply_to(message, "⚠️ Gunakan akhiran .JK (Contoh: BBRI.JK)")
+            return
+
+        bot.send_message(message.chat.id, f"🔍 Menganalisa data pasar untuk {ticker}...")
+        res = get_institutional_analysis(ticker)
         
         if res:
-            msg = (f"📊 *Analisis {ticker}*\n"
-                   f"--------------------------\n"
-                   f"💰 Harga: Rp{res['price']:.0f}\n"
-                   f"🚦 Sinyal: *{res['status']}*\n"
-                   f"🛡️ Stop Loss: Rp{res['sl']:.0f}")
-            bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+            response = (
+                f"📊 *ANALISIS EMITEN: {ticker}*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 *Harga Saat Ini:* Rp{res['price']:.0f}\n"
+                f"📈 *RSI (Momentum):* {res['rsi']:.2f}\n"
+                f"🚦 *Sinyal:* {res['signal']}\n"
+                f"🎯 *Rekomendasi:* `{res['action']}`\n"
+                f"🛡️ *Batas Risiko (SL):* Rp{res['sl']:.0f}\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 _Selalu gunakan manajemen risiko 2% modal._"
+            )
+            bot.send_message(message.chat.id, response, parse_mode="Markdown")
         else:
-            bot.reply_to(message, "Data tidak ditemukan. Pastikan ticker benar (contoh: ASII.JK)")
-    except:
-        bot.reply_to(message, "Format salah. Contoh: `/cek TLKM.JK`")
+            bot.reply_to(message, "❌ Gagal menarik data. Pastikan ticker terdaftar di Bursa.")
+    except Exception:
+        bot.reply_to(message, "⚠️ Format salah. Contoh: `/cek BBCA.JK`")
 
 if __name__ == "__main__":
-    Thread(target=run).start()
-    print("Bot WMI berjalan...")
+    Thread(target=run_server).start()
+    print("Sistem WMI Berjalan...")
     bot.polling(non_stop=True)
