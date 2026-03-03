@@ -1,4 +1,5 @@
-pyTelegramBotAPI
-yfinance
-pandas_ta
-pandas
+pyTelegramBotAPI==4.26.0
+yfinance>=0.2.40
+pandas==2.2.2
+pandas_ta==0.3.14b0
+numpy<2.0.0
