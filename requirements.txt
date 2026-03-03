@@ -1,6 +1,7 @@
 pyTelegramBotAPI==4.26.0
 yfinance>=0.2.40
-pandas==2.2.2
-pandas_ta==0.3.14b0
+pandas>=2.0.0
 numpy<2.0.0
 flask
+# Instal pandas_ta langsung dari GitHub untuk menghindari error versi
+https://github.com/twopirllc/pandas-ta/archive/master.zip
