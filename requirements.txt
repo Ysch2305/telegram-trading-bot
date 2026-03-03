@@ -3,4 +3,4 @@ yfinance>=0.2.40
 pandas>=2.0.0
 numpy<2.0.0
 flask
-git+https://github.com/twopirllc/pandas-ta.git@main
+pandas_ta
