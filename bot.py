@@ -2,21 +2,17 @@ import os
 import telebot
 import yfinance as yf
 import pandas_ta as ta
-import pandas as pd
 
-# Konfigurasi Environment (Input di Railway Settings)
+# Mengambil token dari Environment Variable Railway
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# Database sederhana (Dalam praktek nyata gunakan PostgreSQL di Railway)
-portfolio = {} 
-MODAL_USER = 100000000 # Contoh: 100 Juta
-
-def get_signal(ticker):
+def hitung_sinyal(ticker):
+    # Ambil data 1 tahun terakhir
     df = yf.download(ticker, period="1y", interval="1d")
     if df.empty: return None
     
-    # Indikator Standar Institusi
+    # Indikator teknikal (Standar Institusi)
     df['EMA20'] = ta.ema(df['Close'], length=20)
     df['EMA50'] = ta.ema(df['Close'], length=50)
     df['RSI'] = ta.rsi(df['Close'], length=14)
@@ -25,52 +21,47 @@ def get_signal(ticker):
     curr = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # Logika WMI: Buy hanya jika Golden Cross & RSI belum jenuh
-    signal = "WAIT"
-    reason = "Market tidak memberikan konfirmasi tren."
+    # Logika Keputusan WMI
+    status = "WAIT"
+    detail = "Trend belum terkonfirmasi."
     
     if curr['EMA20'] > curr['EMA50'] and prev['EMA20'] <= prev['EMA50']:
-        signal = "STRONG BUY"
-        reason = "Terjadi Golden Cross EMA20/50. Awal siklus Bullish."
-    elif curr['EMA20'] > curr['EMA50'] and curr['RSI'] < 60:
-        signal = "HOLD / ADD UP"
-        reason = "Tren naik terjaga, RSI masih memiliki ruang kenaikan."
+        status = "🚀 BUY (Golden Cross)"
+        detail = "EMA20 memotong EMA50 ke atas. Awal trend naik."
+    elif curr['EMA20'] > curr['EMA50'] and curr['RSI'] < 65:
+        status = "✅ HOLD / ACCUMULATE"
+        detail = "Trend naik sehat, RSI belum jenuh beli."
     elif curr['RSI'] > 75:
-        signal = "TAKE PROFIT"
-        reason = "Harga sudah jenuh beli (Overbought), risiko koreksi besar."
-        
+        status = "⚠️ TAKE PROFIT"
+        detail = "Harga sudah terlalu tinggi (Overbought)."
+
     return {
         "price": curr['Close'],
-        "signal": signal,
-        "reason": reason,
-        "atr": curr['ATR']
+        "status": status,
+        "detail": detail,
+        "sl": curr['Close'] - (2 * curr['ATR']) # Stop Loss berbasis volatilitas
     }
 
-@bot.message_id_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "🏦 *WMI Trading System Active*\nGunakan `/analisa BBCA.JK` untuk mulai.")
+@bot.message_handler(commands=['start'])
+def welcome(message):
+    bot.reply_to(message, "🏦 *WMI Terminal Active*\nKetik `/cek [KODE SAHAM].JK` untuk analisa.")
 
-@bot.message_handler(commands=['analisa'])
-def analyze(message):
+@bot.message_handler(commands=['cek'])
+def check_stock(message):
     try:
         ticker = message.text.split()[1].upper()
-        data = get_signal(ticker)
+        bot.send_message(message.chat.id, f"🔍 Menganalisa {ticker}...")
         
-        # Risk Management (SL = 2x ATR di bawah harga beli)
-        stop_loss = data['price'] - (2 * data['atr'])
-        
-        response = (
-            f"📊 *Analisis Saham: {ticker}*\n"
-            f"----------------------------\n"
-            f"💰 Harga Saat Ini: Rp{data['price']:.0f}\n"
-            f"🚦 Sinyal: *{data['signal']}*\n"
-            f"📝 Alasan: {data['reason']}\n\n"
-            f"🛡️ *Risk Management:*\n"
-            f"Stop Loss: Rp{stop_loss:.0f}\n"
-            f"Max Buy: {int((MODAL_USER*0.1)/data['price'])} Lot (10% Modal)"
-        )
-        bot.send_message(message.chat.id, response, parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, "Format salah. Gunakan: `/analisa [TICKER].JK`")
+        res = hitung_sinyal(ticker)
+        msg = (f"📊 *Hasil Analisa: {ticker}*\n"
+               f"--------------------------\n"
+               f"💰 Harga: Rp{res['price']:.0f}\n"
+               f"🚦 Sinyal: *{res['status']}*\n"
+               f"📝 Alasan: {res['detail']}\n"
+               f"🛡️ Stop Loss: Rp{res['sl']:.0f}")
+        bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+    except:
+        bot.reply_to(message, "❌ Gagal. Contoh: `/cek BBCA.JK` atau `/cek TLKM.JK`")
 
+print("Bot WMI sedang berjalan...")
 bot.polling()
