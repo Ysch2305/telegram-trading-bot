@@ -16,7 +16,7 @@ def run():
     app.run(host='0.0.0.0', port=port)
 
 # --- LOGIKA BOT ---
-TOKEN = os.getenv('TELEGRAM_TOKEN')
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
 def hitung_sinyal_manual(ticker):
@@ -80,3 +80,4 @@ def check_stock(message):
 if __name__ == "__main__":
     Thread(target=run).start()
     bot.polling(non_stop=True)
+
