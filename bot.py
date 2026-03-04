@@ -16,7 +16,7 @@ def run_server():
     app.run(host='0.0.0.0', port=port)
 
 # --- BOT ---
-TOKEN = os.getenv('TELEGRAM_TOKEN')
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
 def get_institutional_analysis(ticker):
@@ -106,3 +106,4 @@ def check(message):
 if __name__ == "__main__":
     Thread(target=run_server).start()
     bot.polling(non_stop=True)
+
