@@ -16,11 +16,10 @@ def run_server():
     app.run(host='0.0.0.0', port=port)
 
 # --- BOT ---
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TOKEN = os.getenv('TELEGRAM_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
 def get_institutional_analysis(ticker):
-    # Pastikan ticker dalam huruf besar untuk yfinance
     ticker = ticker.upper()
     df = yf.download(ticker, period="1y", interval="1d", progress=False)
     
@@ -41,23 +40,32 @@ def get_institutional_analysis(ticker):
     low_close = np.abs(df['Low'] - df['Close'].shift())
     df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
     
-    curr = df.iloc[-1]
-    prev = df.iloc[-2]
+    # Ambil nilai terakhir dan sebelumnya dengan aman (.item() untuk menghindari Series error)
+    curr_close = df['Close'].iloc[-1].item()
+    curr_ema20 = df['EMA20'].iloc[-1].item()
+    curr_ema50 = df['EMA50'].iloc[-1].item()
+    curr_rsi = df['RSI'].iloc[-1].item()
+    curr_atr = df['ATR'].iloc[-1].item()
     
-    # Keputusan WMI
-    status = "WAIT"
-    if curr['EMA20'] > curr['EMA50'] and prev['EMA20'] <= prev['EMA50']:
+    prev_ema20 = df['EMA20'].iloc[-2].item()
+    prev_ema50 = df['EMA50'].iloc[-2].item()
+    
+    # Keputusan WMI (Menggunakan variabel tunggal, bukan Series)
+    status = "WAIT / SIDEWAYS"
+    if curr_ema20 > curr_ema50 and prev_ema20 <= prev_ema50:
         status = "🚀 BUY (GOLDEN CROSS)"
-    elif curr['EMA20'] > curr['EMA50'] and curr['RSI'] < 60:
-        status = "✅ HOLD"
-    elif curr['RSI'] > 75:
-        status = "⚠️ TAKE PROFIT"
+    elif curr_ema20 > curr_ema50 and curr_rsi < 60:
+        status = "✅ BULLISH (HOLD)"
+    elif curr_rsi > 75:
+        status = "⚠️ TAKE PROFIT (OVERBOUGHT)"
+    elif curr_ema20 < curr_ema50:
+        status = "🔻 BEARISH (STAY OUT)"
         
     return {
-        "price": float(curr['Close']),
-        "rsi": float(curr['RSI']),
+        "price": curr_close,
+        "rsi": curr_rsi,
         "status": status,
-        "sl": float(curr['Close'] - (2 * curr['ATR']))
+        "sl": curr_close - (2 * curr_atr)
     }
 
 @bot.message_handler(commands=['start'])
@@ -67,21 +75,17 @@ def start(message):
 @bot.message_handler(commands=['cek'])
 def check(message):
     try:
-        # Penanganan input yang lebih cerdas
         args = message.text.split()
         if len(args) < 2:
-            bot.reply_to(message, "⚠️ Tolong masukkan kode saham.\nContoh: `/cek TLKM.JK`", parse_mode="Markdown")
+            bot.reply_to(message, "⚠️ Masukkan kode saham. Contoh: `/cek TLKM.JK`", parse_mode="Markdown")
             return
             
         ticker = args[1].upper()
-        
-        # Validasi akhiran .JK
         if ".JK" not in ticker:
-            bot.reply_to(message, "⚠️ Saham Indonesia wajib pakai `.JK` di belakang.\nContoh: `ASII.JK`", parse_mode="Markdown")
+            bot.reply_to(message, "⚠️ Saham Indonesia wajib pakai `.JK`. Contoh: `ASII.JK`")
             return
 
         bot.send_message(message.chat.id, f"🔍 Menganalisa {ticker}...")
-        
         res = get_institutional_analysis(ticker)
         
         if res:
@@ -94,10 +98,9 @@ def check(message):
                    f"━━━━━━━━━━━━━━━━━━━")
             bot.send_message(message.chat.id, msg, parse_mode="Markdown")
         else:
-            bot.reply_to(message, f"❌ Data untuk {ticker} tidak ditemukan atau tidak cukup.")
+            bot.reply_to(message, f"❌ Data untuk {ticker} tidak cukup.")
             
     except Exception as e:
-        # Menampilkan error asli agar kita tahu apa yang salah
         bot.reply_to(message, f"🚨 Terjadi kesalahan sistem: `{str(e)}`", parse_mode="Markdown")
 
 if __name__ == "__main__":
