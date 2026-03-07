@@ -1,5 +1,4 @@
-pyTelegramBotAPI==4.26.0
-yfinance>=0.2.40
-pandas>=2.0.0
-numpy<2.0.0
-flask
+python-telegram-bot==20.7
+yfinance
+pandas
+numpy
