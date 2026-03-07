@@ -2,7 +2,7 @@ import telegram
 from telegram.ext import Updater, CommandHandler
 from scanner import scan_market
 
-TOKEN = "ISI_TOKEN_BOT_ANDA"
+TOKEN = "8505991544:AAFTAdCK-xlRZ1Oru9H7avi1fvw-kZ-TbJk"
 
 bot = telegram.Bot(token=TOKEN)
 
@@ -70,3 +70,4 @@ dp.add_handler(CommandHandler("top", top))
 updater.start_polling()
 
 updater.idle()
+
