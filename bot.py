@@ -1,115 +1,47 @@
 import os
 import yfinance as yf
 import pandas as pd
+import numpy as np
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# ========================
-# PRICE COMMAND
-# ========================
+# =========================
+# STOCK LIST
+# =========================
 
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+stocks = [
+"BBCA.JK","BBRI.JK","BMRI.JK","TLKM.JK","ASII.JK",
+"ICBP.JK","INDF.JK","UNVR.JK","ADRO.JK","ANTM.JK",
+"MDKA.JK","AMRT.JK","CPIN.JK","GOTO.JK","BRIS.JK",
+"PGAS.JK","SMGR.JK","TOWR.JK"
+]
 
-    if len(context.args) == 0:
-        await update.message.reply_text("Usage: /price BBCA.JK")
-        return
+# =========================
+# RSI FUNCTION
+# =========================
 
-    ticker = context.args[0]
+def calculate_rsi(data, period=14):
 
-    data = yf.Ticker(ticker)
+    delta = data["Close"].diff()
 
-    hist = data.history(period="1d")
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    if hist.empty:
-        await update.message.reply_text("Stock not found")
-        return
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
 
-    price = hist["Close"].iloc[-1]
+    rs = avg_gain / avg_loss
 
-    await update.message.reply_text(
-        f"{ticker}\nPrice: {round(price,2)}"
-    )
+    rsi = 100 - (100/(1+rs))
 
-# ========================
-# ANALYZE COMMAND
-# ========================
+    return rsi
 
-async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if len(context.args) == 0:
-        await update.message.reply_text("Usage: /analyze BBCA.JK")
-        return
-
-    ticker = context.args[0]
-
-    data = yf.download(ticker, period="3mo")
-
-    if data.empty:
-        await update.message.reply_text("Stock data not found")
-        return
-
-    data["MA20"] = data["Close"].rolling(20).mean()
-    data["MA50"] = data["Close"].rolling(50).mean()
-
-    last = data.iloc[-1]
-
-    trend = "SIDEWAYS"
-
-    if last["MA20"] > last["MA50"]:
-        trend = "BULLISH"
-    elif last["MA20"] < last["MA50"]:
-        trend = "BEARISH"
-
-    text = f"""
-Stock: {ticker}
-
-Price: {round(last["Close"],2)}
-
-MA20: {round(last["MA20"],2)}
-MA50: {round(last["MA50"],2)}
-
-Trend: {trend}
-"""
-
-    await update.message.reply_text(text)
-
-# ========================
-# RISK REWARD
-# ========================
-
-async def rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if len(context.args) < 3:
-        await update.message.reply_text("Usage: /rr entry stoploss target")
-        return
-
-    entry = float(context.args[0])
-    sl = float(context.args[1])
-    tp = float(context.args[2])
-
-    risk = entry - sl
-    reward = tp - entry
-
-    ratio = round(reward / risk, 2)
-
-    text = f"""
-Entry: {entry}
-Stoploss: {sl}
-Target: {tp}
-
-Risk: {risk}
-Reward: {reward}
-
-Risk Reward = 1:{ratio}
-"""
-
-    await update.message.reply_text(text)
-
-# ========================
+# =========================
 # START
-# ========================
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -120,20 +52,161 @@ Commands:
 
 /price BBCA.JK
 /analyze BBCA.JK
+/scan
 /rr entry stoploss target
 """
 
     await update.message.reply_text(text)
 
-# ========================
+# =========================
+# PRICE
+# =========================
+
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    ticker = context.args[0]
+
+    data = yf.Ticker(ticker)
+
+    hist = data.history(period="1d")
+
+    price = hist["Close"].iloc[-1]
+
+    await update.message.reply_text(
+        f"{ticker}\nPrice : {round(price,2)}"
+    )
+
+# =========================
+# ANALYZE
+# =========================
+
+async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    ticker = context.args[0]
+
+    df = yf.download(ticker, period="3mo")
+
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["MA50"] = df["Close"].rolling(50).mean()
+
+    df["RSI"] = calculate_rsi(df)
+
+    last = df.iloc[-1]
+
+    trend = "SIDEWAYS"
+
+    if last["MA20"] > last["MA50"]:
+        trend = "BULLISH"
+
+    if last["MA20"] < last["MA50"]:
+        trend = "BEARISH"
+
+    text = f"""
+Stock : {ticker}
+
+Price : {round(last["Close"],2)}
+
+MA20 : {round(last["MA20"],2)}
+MA50 : {round(last["MA50"],2)}
+
+RSI : {round(last["RSI"],2)}
+
+Trend : {trend}
+"""
+
+    await update.message.reply_text(text)
+
+# =========================
+# SCAN MARKET
+# =========================
+
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    results = []
+
+    for stock in stocks:
+
+        try:
+
+            df = yf.download(stock, period="3mo")
+
+            if len(df) < 50:
+                continue
+
+            df["MA20"] = df["Close"].rolling(20).mean()
+            df["MA50"] = df["Close"].rolling(50).mean()
+
+            df["RSI"] = calculate_rsi(df)
+
+            last = df.iloc[-1]
+
+            volume_avg = df["Volume"].rolling(20).mean().iloc[-1]
+
+            if (
+                last["MA20"] > last["MA50"]
+                and 50 < last["RSI"] < 70
+                and last["Volume"] > volume_avg*1.5
+            ):
+
+                results.append(
+                    f"{stock} | Price {round(last['Close'],2)} | RSI {round(last['RSI'],2)}"
+                )
+
+        except:
+            continue
+
+    if len(results) == 0:
+
+        await update.message.reply_text("No strong stock found today")
+
+    else:
+
+        text = "TOP MOMENTUM STOCK\n\n"
+
+        for r in results[:10]:
+
+            text += r + "\n"
+
+        await update.message.reply_text(text)
+
+# =========================
+# RISK REWARD
+# =========================
+
+async def rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    entry = float(context.args[0])
+    sl = float(context.args[1])
+    tp = float(context.args[2])
+
+    risk = entry - sl
+    reward = tp - entry
+
+    ratio = round(reward/risk,2)
+
+    text = f"""
+Entry : {entry}
+Stoploss : {sl}
+Target : {tp}
+
+Risk : {risk}
+Reward : {reward}
+
+Risk Reward = 1:{ratio}
+"""
+
+    await update.message.reply_text(text)
+
+# =========================
 # MAIN
-# ========================
+# =========================
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("price", price))
 app.add_handler(CommandHandler("analyze", analyze))
+app.add_handler(CommandHandler("scan", scan))
 app.add_handler(CommandHandler("rr", rr))
 
 print("BOT RUNNING...")
