@@ -2,7 +2,7 @@ import yfinance as yf
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TOKEN = "MASUKKAN_TOKEN_BOT_ANDA"
+TOKEN = "TELEGRAM_BOT_TOKEN"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -39,3 +39,4 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("price", price))
 
 app.run_polling()
+
