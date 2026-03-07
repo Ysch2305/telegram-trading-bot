@@ -1,0 +1,11 @@
+IDX_STOCKS = [
+"BBCA.JK",
+"BBRI.JK",
+"BMRI.JK",
+"BBNI.JK",
+"TLKM.JK",
+"ASII.JK",
+"ANTM.JK",
+"MDKA.JK",
+"ADRO.JK"
+]
