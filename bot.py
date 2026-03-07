@@ -1,43 +1,72 @@
-import yfinance as yf
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import telegram
+from telegram.ext import Updater, CommandHandler
+from scanner import scan_market
 
-TOKEN = "8505991544:AAFTAdCK-xlRZ1Oru9H7avi1fvw-kZ-TbJk"
+TOKEN = "ISI_TOKEN_BOT_ANDA"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+bot = telegram.Bot(token=TOKEN)
 
-    await update.message.reply_text(
-        "Stock Scanner Bot Aktif\n\nCommand:\n/price BBCA.JK"
-    )
+def start(update, context):
 
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = """
+AI Trading Scanner
 
-    try:
+Perintah:
 
-        ticker = context.args[0]
+/scan  → scan peluang saham
+/top → ranking saham terbaik
+"""
 
-        data = yf.Ticker(ticker)
-
-        hist = data.history(period="1d")
-
-        price = hist["Close"].iloc[-1]
-
-        await update.message.reply_text(
-            f"{ticker}\nPrice : {price}"
-        )
-
-    except:
-
-        await update.message.reply_text(
-            "Gunakan format: /price BBCA.JK"
-        )
+    update.message.reply_text(text)
 
 
-app = ApplicationBuilder().token(TOKEN).build()
+def scan(update, context):
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("price", price))
+    update.message.reply_text("Scanning market...")
 
-app.run_polling()
+    data = scan_market()
+
+    if len(data) == 0:
+        update.message.reply_text("Tidak ada peluang hari ini")
+        return
+
+    message = "Peluang Saham Hari Ini\n\n"
+
+    for r in data[:10]:
+
+        message += f"""
+{r['symbol']}
+Price : {r['price']}
+Score : {r['score']}
+Breakout : {r['breakout']}
+Volume Spike : {r['volume_spike']}
+
+"""
+
+    update.message.reply_text(message)
 
 
+def top(update, context):
+
+    data = scan_market()
+
+    message = "Top Saham Hari Ini\n\n"
+
+    for i,r in enumerate(data[:10]):
+
+        message += f"{i+1}. {r['symbol']} | Score {r['score']}\n"
+
+    update.message.reply_text(message)
+
+
+updater = Updater(TOKEN, use_context=True)
+
+dp = updater.dispatcher
+
+dp.add_handler(CommandHandler("start", start))
+dp.add_handler(CommandHandler("scan", scan))
+dp.add_handler(CommandHandler("top", top))
+
+updater.start_polling()
+
+updater.idle()
