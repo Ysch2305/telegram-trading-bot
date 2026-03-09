@@ -1,73 +1,78 @@
 import telegram
 from telegram.ext import Updater, CommandHandler
-from scanner import scan_market
 
-TOKEN = "8505991544:AAFTAdCK-xlRZ1Oru9H7avi1fvw-kZ-TbJk"
+from scanner import analyze_stock
+from config import TELEGRAM_TOKEN, WATCHLIST
 
-bot = telegram.Bot(token=TOKEN)
+
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
+
 
 def start(update, context):
 
-    text = """
-AI Trading Scanner
-
-Perintah:
-
-/scan  → scan peluang saham
-/top → ranking saham terbaik
-"""
-
-    update.message.reply_text(text)
+    update.message.reply_text(
+        "Trading Bot Aktif\n\n"
+        "/scan - scan market\n"
+        "/analyze BBCA.JK - analisa saham"
+    )
 
 
 def scan(update, context):
 
-    update.message.reply_text("Scanning market...")
+    results = []
 
-    data = scan_market()
+    for stock in WATCHLIST:
 
-    if len(data) == 0:
-        update.message.reply_text("Tidak ada peluang hari ini")
-        return
+        result = analyze_stock(stock)
 
-    message = "Peluang Saham Hari Ini\n\n"
+        results.append(result)
 
-    for r in data[:10]:
+    message = "Top Signals\n\n"
 
-        message += f"""
-{r['symbol']}
-Price : {r['price']}
-Score : {r['score']}
-Breakout : {r['breakout']}
-Volume Spike : {r['volume_spike']}
+    for r in results:
 
+        message += f"{r['symbol']}\n"
+        message += f"Price: {r['price']}\n"
+        message += f"Score: {r['score']}\n"
+        message += f"Signal: {r['signal']}\n\n"
+
+    update.message.reply_text(message)
+
+
+def analyze(update, context):
+
+    symbol = context.args[0]
+
+    result = analyze_stock(symbol)
+
+    message = f"""
+Stock: {result['symbol']}
+
+Price: {result['price']}
+
+RSI: {result['rsi']:.2f}
+
+Score: {result['score']}
+
+Signal: {result['signal']}
 """
 
     update.message.reply_text(message)
 
 
-def top(update, context):
+def main():
 
-    data = scan_market()
+    updater = Updater(TELEGRAM_TOKEN)
 
-    message = "Top Saham Hari Ini\n\n"
+    dp = updater.dispatcher
 
-    for i,r in enumerate(data[:10]):
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("scan", scan))
+    dp.add_handler(CommandHandler("analyze", analyze))
 
-        message += f"{i+1}. {r['symbol']} | Score {r['score']}\n"
+    updater.start_polling()
+    updater.idle()
 
-    update.message.reply_text(message)
 
-
-updater = Updater(TOKEN, use_context=True)
-
-dp = updater.dispatcher
-
-dp.add_handler(CommandHandler("start", start))
-dp.add_handler(CommandHandler("scan", scan))
-dp.add_handler(CommandHandler("top", top))
-
-updater.start_polling()
-
-updater.idle()
-
+if __name__ == "__main__":
+    main()
