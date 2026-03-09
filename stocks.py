@@ -6,21 +6,24 @@ def get_stock_data(symbol):
 
     try:
 
-        data = yf.download(
-            symbol,
+        ticker = yf.Ticker(symbol)
+
+        data = ticker.history(
             period="6mo",
             interval="1d",
-            progress=False
+            auto_adjust=False
         )
 
-        if data is None or data.empty:
+        if data is None or len(data) == 0:
+            print(f"No data returned for {symbol}")
             return None
 
-        # pastikan kolom yang diperlukan ada
+        # Pastikan kolom yang diperlukan ada
         required_columns = ["Open", "High", "Low", "Close", "Volume"]
 
         for col in required_columns:
             if col not in data.columns:
+                print(f"Missing column {col} for {symbol}")
                 return None
 
         data = data.dropna()
