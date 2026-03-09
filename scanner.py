@@ -1,60 +1,34 @@
-import yfinance as yf
-import pandas as pd
-from stocks import stocks
+from stocks import get_stock_data
+from indicator import ema, rsi, macd, volume_spike
+from strategy import calculate_score, generate_signal
 
-def scan_market():
 
-    results = []
+def analyze_stock(symbol):
 
-    for symbol in stocks:
+    data = get_stock_data(symbol)
 
-        try:
+    data['EMA20'] = ema(data['Close'], 20)
+    data['EMA50'] = ema(data['Close'], 50)
+    data['EMA200'] = ema(data['Close'], 200)
 
-            df = yf.download(symbol, period="3mo", interval="1d")
+    data['RSI'] = rsi(data['Close'])
 
-            if len(df) < 30:
-                continue
+    macd_line, signal_line, hist = macd(data['Close'])
 
-            df["MA20"] = df["Close"].rolling(20).mean()
-            df["MA50"] = df["Close"].rolling(50).mean()
+    data['MACD'] = macd_line
+    data['SIGNAL'] = signal_line
 
-            volume_today = df["Volume"].iloc[-1]
-            volume_avg = df["Volume"].rolling(20).mean().iloc[-1]
+    data['VOLUME_SPIKE'] = volume_spike(data['Volume'])
 
-            close = df["Close"].iloc[-1]
-            ma20 = df["MA20"].iloc[-1]
-            ma50 = df["MA50"].iloc[-1]
+    score = calculate_score(data)
 
-            volume_spike = volume_today > volume_avg * 2
-            breakout = close > df["High"].rolling(20).max().iloc[-2]
+    signal = generate_signal(score)
 
-            score = 0
+    return {
 
-            if close > ma20:
-                score += 1
-
-            if close > ma50:
-                score += 1
-
-            if volume_spike:
-                score += 2
-
-            if breakout:
-                score += 3
-
-            if score >= 3:
-
-                results.append({
-                    "symbol": symbol,
-                    "price": round(close,2),
-                    "score": score,
-                    "volume_spike": volume_spike,
-                    "breakout": breakout
-                })
-
-        except:
-            pass
-
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-
-    return results
+        "symbol": symbol,
+        "score": score,
+        "signal": signal,
+        "price": data['Close'].iloc[-1],
+        "rsi": data['RSI'].iloc[-1]
+    }
