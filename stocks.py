@@ -1,7 +1,8 @@
-stocks = [
-"BBCA.JK","BBRI.JK","BMRI.JK","BBNI.JK","TLKM.JK",
-"ASII.JK","UNVR.JK","ICBP.JK","INDF.JK","ANTM.JK",
-"MDKA.JK","ADRO.JK","ITMG.JK","PTBA.JK","PGAS.JK",
-"CPIN.JK","JPFA.JK","GOTO.JK","BUKA.JK","SMGR.JK",
-"INTP.JK","KLBF.JK","SIDO.JK","TOWR.JK","TBIG.JK"
-]
+import yfinance as yf
+import pandas as pd
+
+def get_stock_data(symbol):
+
+    data = yf.download(symbol, period="6mo", interval="1d")
+
+    return data
