@@ -5,30 +5,53 @@ from strategy import calculate_score, generate_signal
 
 def analyze_stock(symbol):
 
-    data = get_stock_data(symbol)
+    try:
 
-    data['EMA20'] = ema(data['Close'], 20)
-    data['EMA50'] = ema(data['Close'], 50)
-    data['EMA200'] = ema(data['Close'], 200)
+        data = get_stock_data(symbol)
 
-    data['RSI'] = rsi(data['Close'])
+        if data is None or data.empty:
+            return {
+                "symbol": symbol,
+                "price": 0,
+                "rsi": 0,
+                "score": 0,
+                "signal": "NO DATA"
+            }
 
-    macd_line, signal_line, hist = macd(data['Close'])
+        data['EMA20'] = ema(data['Close'], 20)
+        data['EMA50'] = ema(data['Close'], 50)
+        data['EMA200'] = ema(data['Close'], 200)
 
-    data['MACD'] = macd_line
-    data['SIGNAL'] = signal_line
+        data['RSI'] = rsi(data['Close'])
 
-    data['VOLUME_SPIKE'] = volume_spike(data['Volume'])
+        macd_line, signal_line, hist = macd(data['Close'])
 
-    score = calculate_score(data)
+        data['MACD'] = macd_line
+        data['SIGNAL'] = signal_line
 
-    signal = generate_signal(score)
+        data['VOLUME_SPIKE'] = volume_spike(data['Volume'])
 
-    return {
+        score = calculate_score(data)
 
-        "symbol": symbol,
-        "score": score,
-        "signal": signal,
-        "price": data['Close'].iloc[-1],
-        "rsi": data['RSI'].iloc[-1]
-    }
+        signal = generate_signal(score)
+
+        price = round(data['Close'].iloc[-1], 2)
+        rsi_value = round(data['RSI'].iloc[-1], 2)
+
+        return {
+            "symbol": symbol,
+            "price": price,
+            "rsi": rsi_value,
+            "score": score,
+            "signal": signal
+        }
+
+    except Exception as e:
+
+        return {
+            "symbol": symbol,
+            "price": 0,
+            "rsi": 0,
+            "score": 0,
+            "signal": "ERROR"
+        }
